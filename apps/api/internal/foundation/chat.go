@@ -45,6 +45,7 @@ const maxReceiptReaders = 200
 
 func (s *Server) chatRoutes(mux *http.ServeMux) {
 	s.contactRoutes(mux)
+	s.memberRoutes(mux)
 	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("POST /v1/conversations", s.limit("group-create", 20, s.createGroup))
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.listMessages)
