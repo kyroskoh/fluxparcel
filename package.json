@@ -1,0 +1,12 @@
+{
+  "name": "fluxparcel",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev": "npm run dev -w @fluxparcel/web",
+    "build": "npm run build -w @fluxparcel/web",
+    "typecheck": "npm run typecheck -w @fluxparcel/web",
+    "lint": "npm run lint -w @fluxparcel/web",
+    "test:e2e": "npm run test:e2e -w @fluxparcel/web"
+  }
+}

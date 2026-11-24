@@ -1,11 +1,11 @@
-# Product Requirements Document — QR Chat & File Share
+# Product Requirements Document — FluxParcel
 
 | Field | Value |
 |---|---|
 | Version | 1.4 |
 | Date | 2026-11-24 |
 | Status | Draft for engineering review |
-| Product name | QR Chat (working title) |
+| Product name | FluxParcel |
 | Platforms | Responsive web app / optional PWA on desktop and mobile |
 | Deployment | Cloud or self-hosted |
 
@@ -80,7 +80,7 @@ Provide three invitation types: contact request, private group membership and te
 
 1. Sender selects invitation type, expiry and permitted uses.
 2. Backend generates a cryptographically random opaque token (at least 128 bits of entropy) and stores only its hash with scope, issuer, expiry and usage limits.
-3. App displays a QR encoding an HTTPS universal/app link such as `https://chat.example.com/i/<token>`.
+3. App displays a QR encoding an HTTPS universal/app link such as `https://fluxparcel.xyz/i/<token>`.
 4. Recipient scans using the browser camera or device camera; the HTTPS invitation opens directly in the responsive web app. Installation is never required. Preserve the invitation through authentication.
 5. Recipient reviews issuer, invitation type and requested action, then explicitly accepts. Contact requests require issuer approval unless explicitly pre-authorized.
 6. Backend atomically validates expiry, revocation, usage count, identity and permissions before granting access. Scanning alone never grants membership or downloads files.

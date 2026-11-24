@@ -1,31 +1,46 @@
-# RelayVault
+# FluxParcel
 
-**Connect. Compress. Transfer. Discover.**
+**Connect. Transfer. Discover.**
 
-Self-hosted, responsive messaging and file-sharing PWA with QR invitations, resumable transfers, intelligent queues, ZIP/7z Ultra compression and universal metadata search.
+[FluxParcel.xyz](https://fluxparcel.xyz)
 
-## Status
+FluxParcel is a self-hosted browser workspace for messaging and file sharing. The foundation includes account management and a responsive workspace shell. Messaging, QR invitations, transfers, compression and search are planned in the roadmap.
 
-Planning and requirements. Application code and runnable deployment are not yet implemented.
+## Local development
 
-## Planned features
+Install Docker with the Compose v2 plugin. Copy the environment template, then set three unique random values using hex characters so credentials can be safely interpolated in connection URLs.
 
-- Desktop and mobile browser chat, private and group conversations, QR invitations.
-- Wi-Fi and cellular file sharing, original quality or selectable compression.
-- Persistent upload/download queues, pause/resume, retries and integrity verification.
-- ZIP and capability-gated 7z compression, archive browsing and metadata/content search.
-- Self-hosted deployment and optional PWA installation.
+```sh
+cp .env.example .env
+openssl rand -hex 24
+openssl rand -hex 24
+openssl rand -hex 24
+docker compose up --build --wait
+```
 
-## Proposed stack
+Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. The stack uses development-only HTTP settings.
 
-React, TypeScript, Vite, Go, PostgreSQL, Redis, S3-compatible storage, WebSocket, Web Workers, Docker and Kubernetes.
+`docker compose stop` stops services while retaining their data. `docker compose run --rm --no-deps migrate` reruns the idempotent migration command against a running stack. When serving an HTTPS deployment, terminate TLS at a trusted edge and configure the API with the public HTTPS origin (for example, `APP_ORIGIN=https://fluxparcel.xyz`), private dependencies and a trusted SMTP relay. Leave proxy IP trust disabled unless the API is reachable exclusively through a proxy that overwrites `X-Real-IP`.
 
-## Documentation
+## Verification
+
+With Node.js 24, Go 1.25 or later, and the Compose stack running:
+
+```sh
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+(cd apps/api && go test -race ./... && go vet ./...)
+npx playwright install chromium
+npm run test:e2e
+```
+
+Tests create disposable accounts and use synthetic mail. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
 
 - [Product requirements](PRD.md)
-- [Coding agent instructions](AGENTS.md)
 - [Roadmap](ROADMAP.md)
+- [Implementation progress](docs/progress.md)
+- [Foundation architecture](docs/adr/0001-foundation.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
-
-Start implementation with the foundation milestone in the roadmap. No installation commands are provided until a runnable application exists.

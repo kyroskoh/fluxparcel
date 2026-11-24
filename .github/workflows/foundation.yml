@@ -1,0 +1,78 @@
+name: Foundation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run lint && npm run typecheck && npm run build
+      - name: Check Go formatting, tests and vet
+        working-directory: apps/api
+        run: |
+          test -z "$(gofmt -l .)"
+          go test -race ./...
+          go vet ./...
+      - name: Create ephemeral integration credentials
+        run: |
+          umask 077
+          for name in POSTGRES_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY; do
+            value="$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            printf '%s=%s\n' "$name" "$value" >> .env
+          done
+      - run: docker compose up --build --wait
+      - run: docker compose run --rm --no-deps migrate
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Compose diagnostics
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color api migrate web
+      - name: Stop integration stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and publish immutable revision tags
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for app in api web; do
+            image="ghcr.io/${OWNER,,}/fluxparcel-$app:$GITHUB_SHA"
+            docker build --file "deploy/$app.Dockerfile" \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --tag "$image" .
+            docker push "$image"
+          done
