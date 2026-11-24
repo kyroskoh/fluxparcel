@@ -126,6 +126,7 @@ function Settings({ account, onAccount, signOut }: {
         <label>Display name<input name="displayName" defaultValue={account.displayName} maxLength={80} required /></label>
       </ActionForm>
     </section>
+    <ReadReceiptSetting account={account} onAccount={onAccount} onNotice={setNotice} />
     <section className="settings-card">
       <h2>Email verification</h2>
       {account.verified ? <p className="muted">Email verified</p> : <>
@@ -165,6 +166,32 @@ function Settings({ account, onAccount, signOut }: {
       </ActionForm>
     </section>
   </div>
+}
+
+function ReadReceiptSetting({ account, onAccount, onNotice }: {
+  account: Account
+  onAccount: (account: Account) => void
+  onNotice: (notice: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  return <section className="settings-card">
+    <h2>Privacy</h2>
+    <label className="toggle-row">
+      <input type="checkbox" checked={account.shareReadReceipts} disabled={busy} onChange={async event => {
+        const shareReadReceipts = event.currentTarget.checked
+        setBusy(true); setError(''); onNotice('')
+        try {
+          onAccount(await api<Account>('/account', 'PATCH', { shareReadReceipts }))
+          onNotice(shareReadReceipts ? 'Read receipts shared.' : 'Read receipts turned off.')
+        } catch (error) { setError(errorMessage(error)) }
+        finally { setBusy(false) }
+      }} />
+      Share read receipts
+    </label>
+    <p className="muted">When on, people in your chats can see which of their messages you have read, and you can see the same from others who share theirs. Your unread counts stay private either way.</p>
+    {error && <p role="alert" className="error">{error}</p>}
+  </section>
 }
 
 function Workspace({ account, onAccount, signOut }: { account: Account; onAccount: (user: Account) => void; signOut: () => void }) {

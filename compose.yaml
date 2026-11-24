@@ -71,6 +71,7 @@ services:
       <<: *storage
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
       TRUST_PROXY: "true"
+      RATE_LIMIT_SCALE: ${RATE_LIMIT_SCALE:-1}
       DATABASE_URL: *database
       REDIS_URL: redis://redis:6379/0
       SMTP_ADDRESS: mail:1025

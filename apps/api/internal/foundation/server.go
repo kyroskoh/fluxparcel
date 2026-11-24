@@ -18,6 +18,8 @@ import (
 )
 
 type Server struct {
+	// RateLimitScale multiplies every per-address limit. Values below 1 keep the defaults.
+	RateLimitScale   int64
 	liveSlots        chan struct{}
 	DB               *pgxpool.Pool
 	Cache            *redis.Client
@@ -32,6 +34,13 @@ type Server struct {
 }
 
 type requestIDKey struct{}
+
+func (s *Server) scaledLimit(maximum int64) int64 {
+	if s.RateLimitScale > 1 {
+		return maximum * s.RateLimitScale
+	}
+	return maximum
+}
 
 func (s *Server) Handler() http.Handler {
 	s.liveSlots = make(chan struct{}, 256)
@@ -98,6 +107,7 @@ return count
 `
 
 func (s *Server) limit(bucket string, maximum int64, next http.HandlerFunc) http.HandlerFunc {
+	maximum = s.scaledLimit(maximum)
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if s.TrustProxy {

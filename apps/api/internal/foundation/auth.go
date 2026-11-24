@@ -29,6 +29,8 @@ type account struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
 	Verified    bool   `json:"verified"`
+	// ShareReadReceipts lets other members see this account's read cursor. It is off by default.
+	ShareReadReceipts bool `json:"shareReadReceipts"`
 }
 
 func hashPassword(password string) []byte {
@@ -108,8 +110,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var user account
 	var password []byte
-	err := s.DB.QueryRow(r.Context(), `SELECT id,email,username,display_name,verified_at IS NOT NULL,password_hash FROM users WHERE email=$1`,
-		strings.ToLower(strings.TrimSpace(p.Email))).Scan(&user.ID, &user.Email, &user.Username, &user.DisplayName, &user.Verified, &password)
+	err := s.DB.QueryRow(r.Context(), `SELECT id,email,username,display_name,verified_at IS NOT NULL,share_read_receipts,password_hash
+        FROM users WHERE email=$1`,
+		strings.ToLower(strings.TrimSpace(p.Email))).Scan(&user.ID, &user.Email, &user.Username, &user.DisplayName, &user.Verified, &user.ShareReadReceipts, &password)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		failure(w, r)
 		return
@@ -180,10 +183,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (account, string, bool) {
 	var user account
 	var device string
-	err := s.DB.QueryRow(r.Context(), `SELECT u.id,u.email,u.username,u.display_name,u.verified_at IS NOT NULL,d.id
+	err := s.DB.QueryRow(r.Context(), `SELECT u.id,u.email,u.username,u.display_name,u.verified_at IS NOT NULL,u.share_read_receipts,d.id
         FROM device_sessions d JOIN users u ON u.id=d.user_id
         WHERE d.access_hash=$1 AND d.access_expires_at>now() AND d.expires_at>now()`,
-		digest(cookieValue(r, "rv_access"))).Scan(&user.ID, &user.Email, &user.Username, &user.DisplayName, &user.Verified, &device)
+		digest(cookieValue(r, "rv_access"))).Scan(&user.ID, &user.Email, &user.Username, &user.DisplayName, &user.Verified, &user.ShareReadReceipts, &device)
 	return user, device, authResult(w, r, err)
 }
 
@@ -256,16 +259,31 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var p struct{ DisplayName string }
+	var p struct {
+		DisplayName       *string
+		ShareReadReceipts *bool
+	}
 	if !readJSON(w, r, &p) {
 		return
 	}
-	user.DisplayName = strings.TrimSpace(p.DisplayName)
-	if !validDisplayName(user.DisplayName) {
-		problem(w, r, 400, "invalid_name", "Enter a display name of 1–80 characters.")
+	if p.DisplayName == nil && p.ShareReadReceipts == nil {
+		problem(w, r, 400, "invalid_request", "Invalid request body.")
 		return
 	}
-	if _, err := s.DB.Exec(r.Context(), "UPDATE users SET display_name=$2 WHERE id=$1", user.ID, user.DisplayName); err != nil {
+	if p.DisplayName != nil {
+		name := strings.TrimSpace(*p.DisplayName)
+		if !validDisplayName(name) {
+			problem(w, r, 400, "invalid_name", "Enter a display name of 1–80 characters.")
+			return
+		}
+		p.DisplayName = &name
+	}
+	// Omitted fields keep their stored values so concurrent edits from other devices are not overwritten.
+	err := s.DB.QueryRow(r.Context(), `UPDATE users SET display_name=COALESCE($2,display_name),
+        share_read_receipts=COALESCE($3,share_read_receipts) WHERE id=$1
+        RETURNING display_name,share_read_receipts`, user.ID, p.DisplayName, p.ShareReadReceipts).
+		Scan(&user.DisplayName, &user.ShareReadReceipts)
+	if err != nil {
 		failure(w, r)
 		return
 	}
