@@ -8,4 +8,4 @@
 6. Release: browser matrix, security tests, backup/restore, observability and deployment documentation.
 7. Later: direct LAN/P2P, guest sharing, E2EE with client-side search, OCR and transcription.
 
-PRD.md governs priorities and acceptance criteria. No milestone is implemented yet.
+PRD.md governs priorities and acceptance criteria. The [implementation tracker](docs/progress.md) records Phase 1 coverage and open release gates.
