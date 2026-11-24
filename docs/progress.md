@@ -5,7 +5,7 @@ Phase 1 Foundation merged in PR #1. Phase 2 Chat is underway. The PRD’s P0 cri
 | P0 requirement | Implementation | Remaining release gates |
 | --- | --- | --- |
 | FR-01 Accounts and device sessions | Registration, login, logout, refresh rotation, email verification, display names, device listing and revocation, account deletion | Password recovery, avatars, account privacy controls, production email and abuse testing |
-| FR-02, FR-03 QR and messaging | Private group creation, membership-scoped text chat and group QR creation, review, acceptance and revocation | Direct chats, contact invitations, camera/gallery scanning, member administration, replies, reactions, edits and deletion |
+| FR-02, FR-03 QR and messaging | Private group and direct text chat, group and contact QR links, contact approval, invitation review and revocation | Camera/gallery scanning, member administration, replies, reactions, edits and deletion |
 | FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, transfers route | Multipart and Range transfers, quotas, durable queues, storage preflight, network policy, folders and batch controls |
 | FR-05 Offline delivery and synchronization | Static offline shell, PostgreSQL message history, cursor polling with backoff | WebSockets, Web Push, durable outgoing queue, delivery/read receipts and unread counts |
 | FR-07 Abuse and administration | Authentication and chat rate limits, group invitation revocation | Blocking, reporting and authorized admin tools |
@@ -20,3 +20,5 @@ Phase 1 Foundation merged in PR #1. Phase 2 Chat is underway. The PRD’s P0 cri
 The foundation suite covers the account lifecycle, session rotation and revocation, foreign-origin rejection, the chat shell at reference widths, navigation and offline caching behavior. The PR records the checks executed for this revision. The Chromium mobile profile emulates an Android device. Physical mobile devices, Safari, Firefox, load targets and the transfer- and archive-specific acceptance suites remain open. Local Compose is a development reference. Staging, production setup, backup recovery, telemetry, dependency and container release gates remain open.
 
 The Phase 2 suite exercises private group access, authenticated QR invitation review, single-use redemption, revocation, idempotent sends and cursor synchronization. See ADR 0002 for the current chat delivery model.
+
+The contact suite covers issuer approval, duplicate and unauthorized requests, direct-message membership and account deletion. See ADR 0003 for the approval model.

@@ -17,7 +17,7 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.search) return
 
   const navigation = event.request.mode === 'navigate'
-  if (navigation && !/^\/(?:login|register|chats(?:\/[A-Za-z0-9_-]+)?|transfers|settings)?\/?$/.test(url.pathname)) return
+  if (navigation && !/^\/(?:login|register|chats(?:\/[A-Za-z0-9_-]+)?|transfers|settings|contacts)?\/?$/.test(url.pathname)) return
   if (!navigation && !SHELL.files.includes(url.pathname)) return
 
   event.respondWith((async () => {
