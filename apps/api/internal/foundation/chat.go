@@ -13,10 +13,11 @@ import (
 )
 
 type conversation struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Role  string `json:"role"`
-	Kind  string `json:"kind"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Role   string `json:"role"`
+	Kind   string `json:"kind"`
+	Unread int64  `json:"unread"`
 }
 
 type message struct {
@@ -33,6 +34,7 @@ func (s *Server) chatRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("POST /v1/conversations", s.limit("group-create", 20, s.createGroup))
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.listMessages)
+	mux.HandleFunc("POST /v1/conversations/{id}/read", s.limit("read-cursor", 120, s.markConversationRead))
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", s.limit("message-send", 120, s.sendMessage))
 	mux.HandleFunc("GET /v1/conversations/{id}/invitations", s.listGroupInvites)
 	mux.HandleFunc("POST /v1/invitations", s.limit("invite-create", 30, s.createGroupInvite))
@@ -59,7 +61,9 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.DB.Query(r.Context(), `SELECT c.id,COALESCE(peer.display_name,c.title),m.role,c.kind
+	rows, err := s.DB.Query(r.Context(), `SELECT c.id,COALESCE(peer.display_name,c.title),m.role,c.kind,
+            (SELECT count(*) FROM messages unread WHERE unread.conversation_id=c.id
+                AND unread.sequence>m.read_sequence AND unread.sender_id IS DISTINCT FROM m.user_id)
         FROM memberships m JOIN conversations c ON c.id=m.conversation_id
         LEFT JOIN direct_pairs p ON p.conversation_id=c.id
         LEFT JOIN users peer ON peer.id=CASE WHEN p.first_user=m.user_id THEN p.second_user ELSE p.first_user END
@@ -103,6 +107,41 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 201, result)
+}
+
+func (s *Server) markConversationRead(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if !uuidPattern.MatchString(id) {
+		missing(w, r)
+		return
+	}
+	var input struct {
+		Sequence          int64
+		ExpectedAccountID string
+	}
+	if !readJSON(w, r, &input) {
+		return
+	}
+	if input.ExpectedAccountID != "" && input.ExpectedAccountID != user.ID {
+		problem(w, r, 403, "account_mismatch", "Sign in with the account that opened this chat.")
+		return
+	}
+	if input.Sequence < 1 {
+		problem(w, r, 400, "invalid_cursor", "Enter a positive message sequence.")
+		return
+	}
+	var acknowledged int64
+	err := s.DB.QueryRow(r.Context(), `UPDATE memberships m SET read_sequence=GREATEST(m.read_sequence,$3)
+        FROM conversations c WHERE m.conversation_id=c.id AND c.id=$1
+          AND m.user_id=$2 AND $3 < c.next_sequence RETURNING m.read_sequence`,
+		id, user.ID, input.Sequence).Scan(&acknowledged)
+	if chatResult(w, r, err) {
+		respond(w, 200, map[string]int64{"sequence": acknowledged})
+	}
 }
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,5 @@
 import type { Outbox } from './use-outbox'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Inbox, MessageCircle } from 'lucide-react'
 import QRCode from 'qrcode'
@@ -7,13 +7,15 @@ import { InviteScanner } from './invite-scanner'
 import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
 
-type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct' }
+type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
 type Message = { sequence: number; clientId: string; senderId: string; sender: string; body: string; createdAt: string }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
 export function Chats({ account, outbox }: { account: Account; outbox: Outbox }) {
   const { id } = useParams()
   const [groups, setGroups] = useState<Conversation[] | null>(null)
+  const [listRevision, setListRevision] = useState(0)
+  const onRead = useCallback(() => setListRevision(current => current + 1), [])
   const [newGroup, setNewGroup] = useState(false)
   const [joining, setJoining] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -21,10 +23,22 @@ export function Chats({ account, outbox }: { account: Account; outbox: Outbox })
   const navigate = useNavigate()
   useEffect(() => {
     let active = true
-    api<Conversation[]>('/conversations').then(data => { if (active) setGroups(data) })
-      .catch(error => { if (active) setError(errorMessage(error)) })
-    return () => { active = false }
-  }, [id])
+    let timer: ReturnType<typeof setTimeout>
+    let first = true
+    async function refresh() {
+      try {
+        const data = await api<Conversation[]>('/conversations')
+        if (active) setGroups(data)
+      } catch (error) {
+        if (active && first) setError(errorMessage(error))
+      } finally {
+        first = false
+        if (active) timer = setTimeout(refresh, 10000)
+      }
+    }
+    void refresh()
+    return () => { active = false; clearTimeout(timer) }
+  }, [id, listRevision])
   const group = groups?.find(group => group.id === id)
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -78,12 +92,17 @@ export function Chats({ account, outbox }: { account: Account; outbox: Outbox })
       {error && <p role="alert" className="error">{error}</p>}
       {groups?.length === 0 && <div className="chat-list-empty"><Inbox size={20} aria-hidden /><div><strong>No conversations</strong><p>Your chats will appear here.</p></div></div>}
       <ul className="group-list">{groups?.map(group => <li key={group.id}>
-        <NavLink to={'/chats/' + group.id}><MessageCircle size={19} aria-hidden />{group.title}</NavLink>
+        <NavLink to={'/chats/' + group.id}>
+          <MessageCircle size={19} aria-hidden /><span className="chat-list-title">{group.title}</span>
+          {group.unread > 0 && <span className="unread-badge" aria-label={group.unread === 1 ? '1 unread message' : group.unread + ' unread messages'}>
+            {group.unread}
+          </span>}
+        </NavLink>
       </li>)}</ul>
     </aside>
     <section className={'conversation ' + (group ? 'open-conversation' : '')} aria-label="Conversation">
       {id && <Link className="mobile-back" to="/chats"><ArrowLeft size={18} aria-hidden /> Back to chats</Link>}
-      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} /> : <div className="empty-conversation">
+      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} onRead={onRead} /> : <div className="empty-conversation">
         <div className="conversation-icon"><MessageCircle size={43} strokeWidth={1.5} aria-hidden /></div>
         <h2>{id ? (groups === null && !error ? 'Loading conversation…' : 'Conversation unavailable') : 'No conversation selected'}</h2>
         {id && <Link to="/chats" className="secondary">Open chats</Link>}
@@ -92,7 +111,13 @@ export function Chats({ account, outbox }: { account: Account; outbox: Outbox })
   </div>
 }
 
-function TextChat({ group, account, outbox }: { group: Conversation; account: Account; outbox: Outbox }) {
+function markerInView(marker: HTMLElement, list: HTMLElement) {
+  const bounds = marker.getBoundingClientRect()
+  const viewport = list.getBoundingClientRect()
+  return bounds.height > 0 && viewport.height > 0 && bounds.top >= Math.max(0, viewport.top) && bounds.bottom <= Math.min(window.innerHeight, viewport.bottom)
+}
+
+function TextChat({ group, account, outbox, onRead }: { group: Conversation; account: Account; outbox: Outbox; onRead: () => void }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -100,7 +125,65 @@ function TextChat({ group, account, outbox }: { group: Conversation; account: Ac
   const [syncError, setSyncError] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
-  const endpoint = '/conversations/' + group.id + '/messages'
+  const conversationPath = '/conversations/' + group.id
+  const endpoint = conversationPath + '/messages'
+  const marker = useRef<HTMLLIElement>(null)
+  const list = useRef<HTMLOListElement>(null)
+  const acknowledged = useRef(0)
+  const [markerVisible, setMarkerVisible] = useState(false)
+  const [tabVisible, setTabVisible] = useState(document.visibilityState === 'visible')
+  const latestSequence = messages.at(-1)?.sequence ?? 0
+  const hasMessages = latestSequence > 0
+  useEffect(() => {
+    const node = marker.current
+    if (!node || !hasMessages) return
+    const observer = typeof IntersectionObserver === 'undefined' ? undefined
+      : new IntersectionObserver(([entry]) => setMarkerVisible(entry.intersectionRatio === 1), { threshold: 1 })
+    const measure = () => {
+      setMarkerVisible(Boolean(list.current && markerInView(node, list.current)))
+    }
+    if (observer) observer.observe(node)
+    else {
+      window.addEventListener('scroll', measure, true)
+      window.addEventListener('resize', measure)
+      measure()
+    }
+    const visibility = () => setTabVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', visibility)
+    visibility()
+    return () => {
+      observer?.disconnect()
+      if (!observer) {
+        window.removeEventListener('scroll', measure, true)
+        window.removeEventListener('resize', measure)
+      }
+      document.removeEventListener('visibilitychange', visibility)
+    }
+  }, [hasMessages])
+
+  useEffect(() => {
+    if (!markerVisible || !tabVisible || latestSequence <= acknowledged.current) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    async function markRead() {
+      if (!active || !marker.current || !list.current || document.visibilityState !== 'visible') return
+      if (!markerInView(marker.current, list.current)) return
+      try {
+        const response = await api<{ sequence: number }>(conversationPath + '/read', 'POST', { sequence: latestSequence, expectedAccountId: account.id })
+        if (active) {
+          acknowledged.current = Math.max(acknowledged.current, response.sequence)
+          onRead()
+        }
+      } catch (error) {
+        if (active && !(error instanceof ApiError && [400, 401, 403, 404].includes(error.status))) {
+          timer = setTimeout(markRead, 3000 + Math.random() * 400)
+        }
+      }
+    }
+    void markRead()
+    return () => { active = false; clearTimeout(timer) }
+  }, [account.id, conversationPath, latestSequence, markerVisible, onRead, tabVisible])
+
   useEffect(() => {
     let active = true
     let syncTimer: ReturnType<typeof setTimeout>
@@ -244,11 +327,12 @@ function TextChat({ group, account, outbox }: { group: Conversation; account: Ac
     </header>
     {showInvites && <InvitationManager group={group} />}
     {syncError && <p role="status" className="muted">{syncError}</p>}
-    <ol className="message-list" aria-label="Messages" aria-live="polite">
+    <ol ref={list} className="message-list" aria-label="Messages" aria-live="polite">
       {messages.map(message => <li className={message.senderId === account.id ? 'own-message' : ''} key={message.sequence}>
         <strong>{message.sender}</strong><p>{message.body}</p>
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
       </li>)}
+      {hasMessages && <li ref={marker} className="read-marker" aria-hidden="true" />}
       {pending.map(item => <li className="own-message" key={item.clientId}>
         <p>{item.body}</p>
         <small>{item.failure ? 'Failed: ' + item.failure : 'Queued'}</small>

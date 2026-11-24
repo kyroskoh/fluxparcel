@@ -47,5 +47,6 @@ Tests create disposable accounts and use synthetic mail. GitHub Actions runs the
 - [Invitation scanning architecture](docs/adr/0004-invitation-scanning.md)
 - [Live message synchronization architecture](docs/adr/0005-live-message-sync.md)
 - [Offline text outbox architecture](docs/adr/0006-offline-text-outbox.md)
+- [Private read cursor architecture](docs/adr/0007-private-read-cursors.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
