@@ -1,6 +1,7 @@
 package foundation
 
 import (
+	"errors"
 	"net/http"
 	"time"
 )
@@ -110,6 +111,13 @@ func (s *Server) redeemGroupInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	if member {
 		respond(w, 200, map[string]string{"conversationId": group})
+		return
+	}
+	if err := removedFromGroup(ctx, tx, group, user.ID); errors.Is(err, errRemovedFromGroup) {
+		problem(w, r, 403, "removed_from_group", "A group admin removed you from this group.")
+		return
+	} else if err != nil {
+		failure(w, r)
 		return
 	}
 	err = tx.QueryRow(ctx, `SELECT i.id FROM group_invitations i WHERE i.token_hash=$1 AND `+availableInvite+` FOR UPDATE OF i`, hash).Scan(&id)

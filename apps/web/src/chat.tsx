@@ -10,6 +10,7 @@ import { api, ApiError, errorMessage, type Account } from './api'
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
 type Message = { sequence: number; clientId: string; senderId: string; sender: string; body: string; createdAt: string }
 type Receipts = { sharing: boolean; readers: { userId: string; displayName: string; sequence: number }[] }
+type Member = { userId: string; displayName: string; role: Conversation['role'] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
 export function Chats({ account, outbox }: { account: Account; outbox: Outbox }) {
@@ -126,6 +127,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
   const [syncError, setSyncError] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
+  const [showMembers, setShowMembers] = useState(false)
   const [receipts, setReceipts] = useState<Receipts>({ sharing: false, readers: [] })
   const [syncRevision, setSyncRevision] = useState(0)
   const conversationPath = '/conversations/' + group.id
@@ -234,6 +236,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
           clearTimeout(reconnectTimer)
           setMessages([])
           setShowInvites(false)
+          setShowMembers(false)
           setUnavailable(true)
           setSyncError('This conversation is unavailable.')
           return
@@ -343,10 +346,14 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
 
   return <>
     <header className="group-heading"><h2>{group.title}</h2>
-      {!unavailable && account.verified && group.kind === 'group' && group.role !== 'member' &&
-        <button className="secondary" aria-expanded={showInvites} onClick={() => setShowInvites(!showInvites)}>Group invitations</button>}
+      {!unavailable && group.kind === 'group' && <div className="chat-actions">
+        <button className="secondary" aria-expanded={showMembers} onClick={() => setShowMembers(!showMembers)}>Members</button>
+        {account.verified && group.role !== 'member' &&
+          <button className="secondary" aria-expanded={showInvites} onClick={() => setShowInvites(!showInvites)}>Group invitations</button>}
+      </div>}
     </header>
-    {showInvites && <InvitationManager group={group} />}
+    {showMembers && !unavailable && <MemberManager group={group} account={account} refresh={syncRevision} onChanged={onRead} />}
+    {showInvites && !unavailable && <InvitationManager group={group} />}
     {syncError && <p role="status" className="muted">{syncError}</p>}
     <ol ref={list} className="message-list" aria-label="Messages" aria-live="polite">
       {messages.map(message => <li className={message.senderId === account.id ? 'own-message' : ''} key={message.sequence}>
@@ -376,6 +383,78 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
       </div>
     </form>}
   </>
+}
+
+const roleNames: Record<Member['role'], string> = { owner: 'Owner', admin: 'Admin', member: 'Member' }
+
+function MemberManager({ group, account, refresh, onChanged }: { group: Conversation; account: Account; refresh: number; onChanged: () => void }) {
+  const [members, setMembers] = useState<Member[] | null>(null)
+  const [confirming, setConfirming] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const navigate = useNavigate()
+  const endpoint = '/conversations/' + group.id + '/members'
+  useEffect(() => {
+    const controller = new AbortController()
+    api<Member[]>(endpoint, 'GET', undefined, true, controller.signal).then(result => {
+      if (controller.signal.aborted) return
+      setMembers(result)
+      // Pick up a role change made by the owner on another device.
+      if (result.find(item => item.userId === account.id)?.role !== group.role) onChanged()
+    }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) })
+    return () => controller.abort()
+  }, [account.id, endpoint, group.role, onChanged, refresh])
+
+  async function change(target: Member, action: () => Promise<unknown>, done: string) {
+    if (busy) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      await action()
+      setConfirming('')
+      if (target.userId === account.id) {
+        onChanged()
+        navigate('/chats', { replace: true })
+        return
+      }
+      setMembers(await api<Member[]>(endpoint))
+      setNotice(done)
+    } catch (error) { setError(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+
+  const canRemove = (target: Member) => target.userId !== account.id && target.role !== 'owner'
+    && (group.role === 'owner' || (group.role === 'admin' && target.role === 'member'))
+  const self = members?.find(item => item.userId === account.id)
+  return <div className="settings-card member-panel">
+    <h3>Members{members ? ' (' + members.length + ')' : ''}</h3>
+    {!members && !error && <p role="status">Loading members…</p>}
+    {error && <p role="alert" className="error">{error}</p>}
+    {notice && <p role="status">{notice}</p>}
+    <ul className="device-list" aria-label="Group members">{members?.map(item => <li key={item.userId}>
+      <div><strong>{item.displayName}{item.userId === account.id ? ' (you)' : ''}</strong><small>{roleNames[item.role]}</small></div>
+      <div className="chat-actions">
+        {group.role === 'owner' && item.role !== 'owner' && <button className="secondary" type="button" disabled={busy} onClick={() => {
+          const role = item.role === 'admin' ? 'member' : 'admin'
+          void change(item, () => api(endpoint + '/' + item.userId, 'PATCH', { role }),
+            item.displayName + (role === 'admin' ? ' is now an admin.' : ' is now a member.'))
+        }}>{item.role === 'admin' ? 'Make member' : 'Make admin'}</button>}
+        {canRemove(item) && (confirming === item.userId ? <>
+          <button className="primary" type="button" disabled={busy} onClick={() => {
+            void change(item, () => api(endpoint + '/' + item.userId, 'DELETE'), item.displayName + ' was removed.')
+          }}>Confirm removal of {item.displayName}</button>
+          <button className="secondary" type="button" onClick={() => setConfirming('')}>Cancel</button>
+        </> : <button className="secondary" type="button" disabled={busy} onClick={() => setConfirming(item.userId)}>Remove</button>)}
+      </div>
+    </li>)}</ul>
+    {self && self.role !== 'owner' && (confirming === account.id ? <div className="chat-actions">
+      <button className="primary" type="button" disabled={busy} onClick={() => {
+        void change(self, () => api(endpoint + '/' + account.id, 'DELETE'), '')
+      }}>Confirm leaving {group.title}</button>
+      <button className="secondary" type="button" onClick={() => setConfirming('')}>Cancel</button>
+    </div> : <button className="secondary" type="button" disabled={busy} onClick={() => setConfirming(account.id)}>Leave group</button>)}
+    {self?.role === 'owner' && <p className="muted">As the owner, you cannot leave this group.</p>}
+  </div>
 }
 
 export function InvitationManager({ group }: { group?: Conversation }) {
