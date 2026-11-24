@@ -8,7 +8,12 @@ import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
-type Message = { sequence: number; clientId: string; senderId: string; sender: string; body: string; createdAt: string }
+type Message = {
+  sequence: number; version: number; clientId: string; senderId: string; sender: string; body: string
+  createdAt: string; editedAt?: string; deletedAt?: string
+}
+
+const editWindow = 24 * 60 * 60 * 1000
 type Receipts = { sharing: boolean; readers: { userId: string; displayName: string; sequence: number }[] }
 type Member = { userId: string; displayName: string; role: Conversation['role'] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
@@ -124,6 +129,12 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
+  const [editing, setEditing] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [confirming, setConfirming] = useState<number | null>(null)
+  const [messageBusy, setMessageBusy] = useState(false)
+  const [messageError, setMessageError] = useState('')
+  const [now, setNow] = useState(() => Date.now())
   const [syncError, setSyncError] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
@@ -195,6 +206,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
     let reconnectTimer: ReturnType<typeof setTimeout>
     let socket: WebSocket | undefined
     let after = 0
+    let since = 0
     let syncing = false
     let requested = false
     let retry = 2000
@@ -222,12 +234,26 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
         if (!active) return
         if (page.length) {
           after = page[page.length - 1].sequence
+          since = Math.max(since, ...page.map(item => item.version))
           setMessages(current => [...current, ...page])
         }
+        let more = page.length === 100
+        if (!more) {
+          // Pick up edits and deletions of loaded messages. Newer messages arrive through the sequence cursor.
+          const changes = await api<Message[]>(endpoint + '?changedSince=' + since)
+          if (!active) return
+          if (changes.length) {
+            since = changes[changes.length - 1].version
+            const loaded = new Map(changes.filter(item => item.sequence <= after).map(item => [item.sequence, item]))
+            if (loaded.size) setMessages(current => current.map(item => loaded.get(item.sequence) ?? item))
+          }
+          more = changes.length === 100
+        }
         setSyncError('')
+        setNow(Date.now())
         setSyncRevision(current => current + 1)
         retry = 2000
-        if (page.length < 100) next = socket && socket.readyState === WebSocket.OPEN ? 15000 : 2000
+        if (!more) next = socket && socket.readyState === WebSocket.OPEN ? 15000 : 2000
       } catch (error) {
         if (!active) return
         if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
@@ -341,6 +367,27 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
     } finally { setSending(false) }
   }
 
+  async function changeMessage(message: Message, method: 'PATCH' | 'DELETE') {
+    if (messageBusy) return
+    setMessageBusy(true)
+    setMessageError('')
+    try {
+      const path = endpoint + '/' + message.sequence
+      if (method === 'PATCH') {
+        // The expected version stops an edit from overwriting a newer change made on another device.
+        const updated = await api<Message>(path, 'PATCH', { body: editDraft, expectedVersion: message.version })
+        setMessages(current => current.map(item => item.sequence === updated.sequence ? updated : item))
+        setEditing(null)
+      } else {
+        await api(path, 'DELETE')
+        const deletedAt = new Date().toISOString()
+        setMessages(current => current.map(item => item.sequence === message.sequence ? { ...item, body: '', deletedAt } : item))
+        setConfirming(null)
+      }
+    } catch (error) { setMessageError(errorMessage(error)) }
+    finally { setMessageBusy(false) }
+  }
+
   const pending = outbox.messages.filter(item => item.conversationId === group.id
     && !messages.some(message => message.senderId === account.id && message.clientId === item.clientId))
 
@@ -356,11 +403,41 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
     {showInvites && !unavailable && <InvitationManager group={group} />}
     {syncError && <p role="status" className="muted">{syncError}</p>}
     <ol ref={list} className="message-list" aria-label="Messages" aria-live="polite">
-      {messages.map(message => <li className={message.senderId === account.id ? 'own-message' : ''} key={message.sequence}>
-        <strong>{message.sender}</strong><p>{message.body}</p>
-        <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
-        {message.senderId === account.id && receiptLabel(message.sequence) && <small className="receipt">{receiptLabel(message.sequence)}</small>}
-      </li>)}
+      {messages.map(message => {
+        const own = message.senderId === account.id
+        const canEdit = own && !message.deletedAt && now - Date.parse(message.createdAt) < editWindow
+        const canDelete = !message.deletedAt && (own || (group.kind === 'group' && group.role !== 'member'))
+        return <li className={own ? 'own-message' : ''} key={message.sequence}>
+          <strong>{message.sender}</strong>
+          {message.deletedAt ? <p className="message-deleted">Message deleted</p>
+            : editing === message.sequence ? <form className="action-form message-edit" onSubmit={event => {
+              event.preventDefault()
+              void changeMessage(message, 'PATCH')
+            }}>
+              <label>Edit message<input value={editDraft} maxLength={800} autoFocus onChange={event => setEditDraft(event.target.value)} /></label>
+              <div className="chat-actions">
+                <button className="primary" disabled={messageBusy || !editDraft.trim()}>Save</button>
+                <button className="secondary" type="button" onClick={() => setEditing(null)}>Cancel</button>
+              </div>
+            </form> : <p>{message.body}</p>}
+          <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
+          {message.editedAt && !message.deletedAt && <small className="edited-label">Edited</small>}
+          {own && receiptLabel(message.sequence) && <small className="receipt">{receiptLabel(message.sequence)}</small>}
+          {!unavailable && editing !== message.sequence && (canEdit || canDelete) && <div className="message-actions">
+            {confirming === message.sequence ? <>
+              <button className="primary" type="button" disabled={messageBusy} onClick={() => void changeMessage(message, 'DELETE')}>Confirm delete</button>
+              <button className="secondary" type="button" onClick={() => setConfirming(null)}>Cancel</button>
+            </> : <>
+              {canEdit && <button className="secondary" type="button" onClick={() => {
+                setEditing(message.sequence); setEditDraft(message.body); setConfirming(null); setMessageError('')
+              }}>Edit</button>}
+              {canDelete && <button className="secondary" type="button" onClick={() => {
+                setConfirming(message.sequence); setEditing(null); setMessageError('')
+              }}>Delete</button>}
+            </>}
+          </div>}
+        </li>
+      })}
       {hasMessages && <li ref={marker} className="read-marker" aria-hidden="true" />}
       {pending.map(item => <li className="own-message" key={item.clientId}>
         <p>{item.body}</p>
@@ -375,6 +452,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
         </div>}
       </li>)}
     </ol>
+    {messageError && <p role="alert" className="error">{messageError}</p>}
     {sendError && <p role="alert" className="error">{sendError}</p>}
     {!unavailable && <form className="action-form composer" onSubmit={send}>
       <label>Message<input value={draft} maxLength={800} onChange={event => setDraft(event.target.value)} /></label>

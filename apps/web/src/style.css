@@ -154,3 +154,8 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .message-list .receipt { color: var(--muted); font-size: .8rem; }
 .member-panel h3 { margin: 0; font-size: 1rem; }
 .member-panel .device-list li { flex-wrap: wrap; gap: .5rem; }
+.message-list .message-deleted { color: var(--muted); font-style: italic; }
+.message-list .edited-label { color: var(--muted); font-size: .8rem; }
+.message-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.message-actions button { padding: .25rem .65rem; font-size: .85rem; }
+.message-edit { width: 100%; }

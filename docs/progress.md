@@ -5,7 +5,7 @@ Phase 1 Foundation merged in PR #1. Phase 2 Chat is underway. The PRD’s P0 cri
 | P0 requirement | Implementation | Remaining release gates |
 | --- | --- | --- |
 | FR-01 Accounts and device sessions | Registration, login, logout, refresh rotation, email verification, display names, device listing and revocation, account deletion | Password recovery, avatars, further account privacy controls, production email and abuse testing |
-| FR-02, FR-03 QR and messaging | Private group and direct text chat, group and contact QR links, contact approval, camera/gallery QR scanning, invitation review and revocation, group member listing, role changes, removal and leaving | Ownership transfer, replies, reactions, edits and deletion |
+| FR-02, FR-03 QR and messaging | Private group and direct text chat, group and contact QR links, contact approval, camera/gallery QR scanning, invitation review and revocation, group member listing, role changes, removal and leaving, message edits and deletion | Ownership transfer, replies, reactions and edit history |
 | FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, transfers route | Multipart and Range transfers, quotas, durable queues, storage preflight, network policy, folders and batch controls |
 | FR-05 Offline delivery and synchronization | Static offline shell, PostgreSQL message history, live WebSocket notices, cursor catch-up, polling fallback, durable offline text outbox, cross-device unread counts and opt-in reciprocal read receipts | Web Push, device delivery receipts and per-message receipt history |
 | FR-07 Abuse and administration | Authentication and chat rate limits, group invitation revocation | Blocking, reporting and authorized admin tools |
@@ -34,3 +34,5 @@ Read-progress coverage checks private cross-device counts, incoming-only totals,
 Read-receipt coverage checks the off-by-default preference, reciprocal sharing, non-member and signed-out access, live "Sent" to "Read" updates, and switching off without changing the private cursor or unread count. It runs on the desktop and mobile Chromium profiles. The "Read by N" group label has no browser test yet. See ADR 0008.
 
 Member-administration coverage checks owner, admin, member and non-member permissions. It also covers closing a removed member's live view, blocking rejoining after removal, revoking a demoted admin's invitations, and leaving and rejoining through the browser. See ADR 0009.
+
+Edit and deletion coverage checks sender-only edits, moderator and sender deletion, stale and idempotent edits, outbox resends after an edit, the change cursor, and live updates in other open chats. See ADR 0010.
