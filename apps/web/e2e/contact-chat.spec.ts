@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import QRCode from 'qrcode'
 import { password, register, verifyEmail } from './chat-fixtures'
+import { checkOfflineOutbox, checkOutboxSignOut } from './outbox-fixtures'
 
 test('contact approval opens exactly one private direct conversation', async ({ page, browser, request, baseURL }) => {
+  test.setTimeout(65000)
   const origin = baseURL!
   const headers = { Origin: origin }
   const recipient = await browser.newContext({ baseURL })
@@ -89,6 +91,13 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     expect((await recipient.request.post(messages, { headers, data: { clientId: randomUUID(), body: 'Hello from the direct chat' } })).status()).toBe(201)
     await expect.poll(() => unavailableSocketAttempts).toBeGreaterThan(0)
     await expect(page.getByText('Hello from the direct chat')).toBeVisible()
+    const owner = await (await page.request.get('/v1/account')).json()
+    expect((await recipient.request.post(messages, {
+      headers, data: { clientId: randomUUID(), body: 'Wrong account', expectedSenderId: owner.id },
+    })).status()).toBe(403)
+    await checkOfflineOutbox(page, messages, 'Contact Recipient')
+    await checkOutboxSignOut(page, messages)
+    expect((await page.request.post('/v1/auth/login', { headers, data: { email: senderEmail, password } })).status()).toBe(200)
     const declinable = await (await page.request.post('/v1/contact-invitations', { headers, data: {} })).json()
     const declineToken = new URL(declinable.url).hash.slice('#contact_'.length)
     expect((await outsider.request.post('/v1/contact-invitations/redeem', { headers, data: { token: declineToken } })).status()).toBe(204)
