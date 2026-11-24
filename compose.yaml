@@ -40,6 +40,8 @@ services:
         condition: service_started
     environment: &storage
       APP_ENV: development
+      NO_PROXY: &private_hosts localhost,127.0.0.1,s3
+      no_proxy: *private_hosts
       S3_ENDPOINT: http://s3:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
