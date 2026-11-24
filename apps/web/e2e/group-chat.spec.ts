@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { expect, test } from '@playwright/test'
+import { expect, test, type WebSocket } from '@playwright/test'
 import QRCode from 'qrcode'
 import { password, register, verifyEmail } from './chat-fixtures'
 
@@ -67,6 +67,17 @@ test('private group invitations, atomic redemption and durable message synchroni
     await scanner.close()
     expect((await member.request.post('/v1/auth/logout', { headers })).status()).toBe(204)
     const recipient = await member.newPage()
+    const liveConnections: WebSocket[] = []
+    const readyConnections = new Set<WebSocket>()
+    const changeNotifications: string[] = []
+    recipient.on('websocket', socket => {
+      if (!new URL(socket.url()).pathname.endsWith('/v1/events')) return
+      liveConnections.push(socket)
+      socket.on('framereceived', ({ payload }) => {
+        if (payload === 'messages.ready') readyConnections.add(socket)
+        if (payload === 'messages.changed') changeNotifications.push(payload)
+      })
+    })
     await recipient.goto(link)
     await expect(recipient).toHaveURL(/\/i$/)
     await recipient.getByRole('link', { name: 'Sign in to preview' }).click()
@@ -79,6 +90,12 @@ test('private group invitations, atomic redemption and durable message synchroni
     await expect(recipient.getByRole('heading', { name: 'Private test group' })).toBeVisible()
     expect((await outsider.request.post('/v1/invitations/redeem', { headers, data: { token: inviteToken } })).status()).toBe(404)
 
+    await expect.poll(() => readyConnections.size).toBe(1)
+    const firstConnection = liveConnections[0]
+    const events = '/v1/events?conversationId=' + group
+    expect((await page.request.get(events, { headers: { Origin: 'https://outside.example' } })).status()).toBe(403)
+    expect((await request.get(events, { headers })).status()).toBe(401)
+    expect((await outsider.request.get(events, { headers })).status()).toBe(404)
     const data = { clientId: randomUUID(), body: 'First synthetic message' }
     await member.setOffline(true)
     const sends = await Promise.all([
@@ -90,8 +107,11 @@ test('private group invitations, atomic redemption and durable message synchroni
     await expect(recipient.getByText('Connection interrupted. Retrying message synchronization.')).toBeVisible()
     await member.setOffline(false)
     await expect(recipient.getByText(data.body)).toHaveCount(1, { timeout: 15000 })
+    await expect.poll(() => firstConnection.isClosed()).toBe(true)
+    await expect.poll(() => readyConnections.size).toBe(2)
     await recipient.getByLabel('Message', { exact: true }).fill('Reply from a member')
     await recipient.getByRole('button', { name: 'Send', exact: true }).click()
+    await expect.poll(() => changeNotifications.length).toBeGreaterThan(0)
     await expect(page.getByText('Reply from a member')).toBeVisible()
     const delta = await page.request.get(endpoint + '?after=1')
     expect((await delta.json()).map((item: { sequence: number }) => item.sequence)).toEqual([2])
@@ -105,6 +125,16 @@ test('private group invitations, atomic redemption and durable message synchroni
     await expect(page.getByText('Invitation revoked.')).toBeVisible()
     expect((await outsider.request.post('/v1/invitations/inspect', { headers, data: { token: revocableToken } })).status()).toBe(404)
     expect((await member.request.get(endpoint)).status()).toBe(200)
+
+    const activeSocket = liveConnections[liveConnections.length - 1]
+    expect((await member.request.post('/v1/auth/logout', { headers })).status()).toBe(204)
+    expect((await page.request.post(endpoint, {
+      headers, data: { clientId: randomUUID(), body: 'Message after session revocation' },
+    })).status()).toBe(201)
+    await expect.poll(() => activeSocket.isClosed()).toBe(true)
+    await expect(recipient.getByText('This conversation is unavailable.')).toBeVisible()
+    await expect(recipient.getByText('Message after session revocation')).toHaveCount(0)
+    expect((await member.request.post('/v1/auth/login', { headers, data: { email: memberEmail, password } })).status()).toBe(200)
   } finally {
     await Promise.all([page.request, member.request, outsider.request].map(client =>
       client.delete('/v1/account', { headers, data: { password } }),

@@ -31,6 +31,6 @@ export default defineConfig({
   plugins: [react(), tailwind(), offlineShell()],
   server: {
     host: 'localhost',
-    proxy: { '/v1': process.env.FLUXPARCEL_API ?? 'http://localhost:8080' },
+    proxy: { '/v1': { target: process.env.FLUXPARCEL_API ?? 'http://localhost:8080', ws: true } },
   },
 })

@@ -104,11 +104,33 @@ function TextChat({ group, account }: { group: Conversation; account: Account })
   const endpoint = '/conversations/' + group.id + '/messages'
   useEffect(() => {
     let active = true
-    let timer: ReturnType<typeof setTimeout>
+    let syncTimer: ReturnType<typeof setTimeout>
+    let reconnectTimer: ReturnType<typeof setTimeout>
+    let socket: WebSocket | undefined
     let after = 0
-    let delay = 2000
+    let syncing = false
+    let requested = false
+    let retry = 2000
+    let reconnect = 1000
+    const jitter = () => Math.random() * 400
+
+    function disconnect() {
+      const current = socket
+      socket = undefined
+      current?.close()
+    }
+
     async function sync() {
+      if (!active) return
+      if (syncing) {
+        requested = true
+        return
+      }
+      clearTimeout(syncTimer)
+      syncing = true
+      let next = 0
       try {
+        if (!navigator.onLine) throw new Error('Offline')
         const page = await api<Message[]>(endpoint + '?after=' + after)
         if (!active) return
         if (page.length) {
@@ -116,10 +138,14 @@ function TextChat({ group, account }: { group: Conversation; account: Account })
           setMessages(current => [...current, ...page])
         }
         setSyncError('')
-        delay = page.length === 100 ? 0 : 2000
+        retry = 2000
+        if (page.length < 100) next = socket && socket.readyState === WebSocket.OPEN ? 15000 : 2000
       } catch (error) {
         if (!active) return
         if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
+          active = false
+          disconnect()
+          clearTimeout(reconnectTimer)
           setMessages([])
           setShowInvites(false)
           setUnavailable(true)
@@ -127,13 +153,72 @@ function TextChat({ group, account }: { group: Conversation; account: Account })
           return
         }
         setSyncError('Connection interrupted. Retrying message synchronization.')
-        delay = Math.min(30000, Math.max(2000, delay * 2))
+        next = retry
+        retry = Math.min(30000, retry * 2)
+      } finally {
+        syncing = false
+        if (active) syncTimer = setTimeout(sync, requested || next === 0 ? 0 : next + jitter())
+        requested = false
       }
-      if (active) timer = setTimeout(sync, delay + (delay ? Math.random() * 400 : 0))
     }
+
+    function connect() {
+      clearTimeout(reconnectTimer)
+      if (!active || socket || !navigator.onLine || typeof WebSocket === 'undefined') return
+      const url = new URL('/v1/events', window.location.href)
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+      url.searchParams.set('conversationId', group.id)
+      const schedule = () => {
+        reconnectTimer = setTimeout(connect, reconnect + jitter())
+        reconnect = Math.min(30000, reconnect * 2)
+      }
+      try {
+        const connection = new WebSocket(url)
+        socket = connection
+        connection.onopen = () => {
+          if (socket !== connection) return
+          reconnect = 1000
+          void sync()
+        }
+        connection.onmessage = event => {
+          if (socket === connection && event.data === 'messages.changed') void sync()
+        }
+        connection.onclose = () => {
+          if (!active || socket !== connection) return
+          socket = undefined
+          void sync()
+          if (navigator.onLine) schedule()
+        }
+      } catch {
+        schedule()
+      }
+    }
+
+    function online() {
+      reconnect = 1000
+      connect()
+      void sync()
+    }
+
+    function offline() {
+      clearTimeout(reconnectTimer)
+      disconnect()
+      void sync()
+    }
+
+    window.addEventListener('online', online)
+    window.addEventListener('offline', offline)
+    connect()
     void sync()
-    return () => { active = false; clearTimeout(timer) }
-  }, [endpoint])
+    return () => {
+      active = false
+      window.removeEventListener('online', online)
+      window.removeEventListener('offline', offline)
+      disconnect()
+      clearTimeout(syncTimer)
+      clearTimeout(reconnectTimer)
+    }
+  }, [endpoint, group.id])
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()

@@ -18,6 +18,7 @@ import (
 )
 
 type Server struct {
+	liveSlots        chan struct{}
 	DB               *pgxpool.Pool
 	Cache            *redis.Client
 	Objects          *minio.Client
@@ -33,6 +34,7 @@ type Server struct {
 type requestIDKey struct{}
 
 func (s *Server) Handler() http.Handler {
+	s.liveSlots = make(chan struct{}, 256)
 	s.passwordWork = make(chan struct{}, 4)
 	s.dummyHash = hashPassword("dummy-password-for-missing-users")
 	mux := http.NewServeMux()
@@ -55,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/account/devices", s.devices)
 	mux.HandleFunc("DELETE /v1/account/devices/{id}", s.revokeDevice)
 	s.chatRoutes(mux)
+	mux.HandleFunc("GET "+livePath, s.limit("live-open", 120, s.liveMessages))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 404, "not_found", "Endpoint unavailable.")
 	})
