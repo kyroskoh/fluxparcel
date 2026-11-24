@@ -172,8 +172,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		missing(w, r)
 		return
 	}
-	var input struct{ ClientID, Body string }
+	var input struct{ ClientID, Body, ExpectedSenderID string }
 	if !readJSON(w, r, &input) {
+		return
+	}
+	if input.ExpectedSenderID != "" && input.ExpectedSenderID != user.ID {
+		problem(w, r, 403, "sender_mismatch", "Sign in with the account that queued this message.")
 		return
 	}
 	input.Body = strings.TrimSpace(input.Body)

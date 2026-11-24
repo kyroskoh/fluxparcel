@@ -1,3 +1,4 @@
+import type { Outbox } from './use-outbox'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Inbox, MessageCircle } from 'lucide-react'
@@ -8,10 +9,9 @@ import { api, ApiError, errorMessage, type Account } from './api'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct' }
 type Message = { sequence: number; clientId: string; senderId: string; sender: string; body: string; createdAt: string }
-type Draft = { clientId: string; body: string }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
-export function Chats({ account }: { account: Account }) {
+export function Chats({ account, outbox }: { account: Account; outbox: Outbox }) {
   const { id } = useParams()
   const [groups, setGroups] = useState<Conversation[] | null>(null)
   const [newGroup, setNewGroup] = useState(false)
@@ -83,7 +83,7 @@ export function Chats({ account }: { account: Account }) {
     </aside>
     <section className={'conversation ' + (group ? 'open-conversation' : '')} aria-label="Conversation">
       {id && <Link className="mobile-back" to="/chats"><ArrowLeft size={18} aria-hidden /> Back to chats</Link>}
-      {group ? <TextChat key={group.id} group={group} account={account} /> : <div className="empty-conversation">
+      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} /> : <div className="empty-conversation">
         <div className="conversation-icon"><MessageCircle size={43} strokeWidth={1.5} aria-hidden /></div>
         <h2>{id ? (groups === null && !error ? 'Loading conversation…' : 'Conversation unavailable') : 'No conversation selected'}</h2>
         {id && <Link to="/chats" className="secondary">Open chats</Link>}
@@ -92,10 +92,9 @@ export function Chats({ account }: { account: Account }) {
   </div>
 }
 
-function TextChat({ group, account }: { group: Conversation; account: Account }) {
+function TextChat({ group, account, outbox }: { group: Conversation; account: Account; outbox: Outbox }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
-  const [attempt, setAttempt] = useState<Draft>()
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
   const [syncError, setSyncError] = useState('')
@@ -223,18 +222,20 @@ function TextChat({ group, account }: { group: Conversation; account: Account })
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (sending || unavailable) return
-    const pending = attempt ?? { clientId: crypto.randomUUID(), body: draft.trim() }
-    if (!pending.body) return
-    setAttempt(pending)
+    const body = draft.trim()
+    if (!body) return
     setSending(true)
     setSendError('')
     try {
-      await api<Message>(endpoint, 'POST', pending)
-      setDraft('')
-      setAttempt(undefined)
-    } catch (error) { setSendError(errorMessage(error)) }
-    finally { setSending(false) }
+      await outbox.enqueue(group.id, body)
+      setDraft(current => current === draft ? '' : current)
+    } catch {
+      setSendError('Could not save the message to the local queue. Your draft is still here.')
+    } finally { setSending(false) }
   }
+
+  const pending = outbox.messages.filter(item => item.conversationId === group.id
+    && !messages.some(message => message.senderId === account.id && message.clientId === item.clientId))
 
   return <>
     <header className="group-heading"><h2>{group.title}</h2>
@@ -248,15 +249,24 @@ function TextChat({ group, account }: { group: Conversation; account: Account })
         <strong>{message.sender}</strong><p>{message.body}</p>
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
       </li>)}
+      {pending.map(item => <li className="own-message" key={item.clientId}>
+        <p>{item.body}</p>
+        <small>{item.failure ? 'Failed: ' + item.failure : 'Queued'}</small>
+        {item.failure && <div className="chat-actions">
+          <button className="secondary" type="button" onClick={() => {
+            void outbox.retry(item).catch(() => setSendError('Could not retry the queued message.'))
+          }}>Retry send</button>
+          <button className="secondary" type="button" onClick={() => {
+            void outbox.discard(item).catch(() => setSendError('Could not discard the queued message.'))
+          }}>Discard</button>
+        </div>}
+      </li>)}
     </ol>
+    {sendError && <p role="alert" className="error">{sendError}</p>}
     {!unavailable && <form className="action-form composer" onSubmit={send}>
-      <label>Message<input value={draft} maxLength={800} readOnly={Boolean(attempt)} onChange={event => setDraft(event.target.value)} /></label>
-      {sendError && <p role="alert" className="error">{sendError}</p>}
+      <label>Message<input value={draft} maxLength={800} onChange={event => setDraft(event.target.value)} /></label>
       <div className="chat-actions">
-        <button className="primary" disabled={sending || !draft.trim()}>{sending ? 'Sending…' : attempt ? 'Retry send' : 'Send'}</button>
-        {attempt && !sending && <button className="secondary" type="button" onClick={() => {
-          setAttempt(undefined); setDraft(''); setSendError('')
-        }}>Discard retry</button>}
+        <button className="primary" disabled={sending || !draft.trim()}>{sending ? 'Saving…' : 'Send'}</button>
       </div>
     </form>}
   </>

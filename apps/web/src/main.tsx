@@ -1,3 +1,5 @@
+import { useOutbox } from './use-outbox'
+import { purgeOutbox } from './outbox'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
@@ -166,6 +168,7 @@ function Settings({ account, onAccount, signOut }: {
 }
 
 function Workspace({ account, onAccount, signOut }: { account: Account; onAccount: (user: Account) => void; signOut: () => void }) {
+  const outbox = useOutbox(account.id)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [dark, setDark] = useState(() => localStorage.getItem('fluxparcel-theme') === 'dark'
     || (!localStorage.getItem('fluxparcel-theme') && matchMedia('(prefers-color-scheme: dark)').matches))
@@ -193,9 +196,9 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
         <Link className="avatar" to="/settings" aria-label="Account settings">{Array.from(account.displayName)[0]?.toLocaleUpperCase()}</Link>
       </div>
     </header>
-    {offline && <p className="banner" role="status"><CircleHelp size={17} aria-hidden /> You’re offline. Account changes need a connection.</p>}
+    {offline && <p className="banner" role="status"><CircleHelp size={17} aria-hidden /> You’re offline. Queued messages will send when you reconnect.</p>}
     {!account.verified && location.pathname !== '/settings' && <p className="banner"><Mail size={17} aria-hidden /><Link to="/settings">Verify your email in Settings</Link></p>}
-    {error && <p className="banner error" role="alert">{error}</p>}
+    {(error || outbox.error) && <p className="banner error" role="alert">{error || outbox.error}</p>}
     <div className="workspace-body">
       <nav className="rail" aria-label="Workspace">
         <NavLink to="/chats"><MessageCircle size={21} aria-hidden />Chats</NavLink>
@@ -209,8 +212,8 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
       </nav>
       <main id="content" tabIndex={-1}>
         <Routes>
-          <Route path="/chats" element={<Chats account={account} />} />
-          <Route path="/chats/:id" element={<Chats account={account} />} />
+          <Route path="/chats" element={<Chats account={account} outbox={outbox} />} />
+          <Route path="/chats/:id" element={<Chats account={account} outbox={outbox} />} />
           <Route path="/contacts" element={<Contacts account={account} />} />
           <Route path="/transfers" element={<div className="settings-content">
             <header className="page-heading"><span className="section-icon"><ArrowDownUp size={23} aria-hidden /></span><h1>Transfers</h1></header>
@@ -238,16 +241,39 @@ function App() {
   }, [location.hash, location.pathname, navigate])
   useEffect(() => {
     let active = true
-    api<Account>('/account').then(account => { if (active) setAccount(account) }).catch(error => {
-      if (!active) return
-      if (!(error instanceof ApiError && error.status === 401)) setError(errorMessage(error))
-      setAccount(null)
-    })
-    return () => { active = false }
+    let retryOnReconnect = false
+    let checking = false
+    async function loadAccount() {
+      if (checking) return
+      checking = true
+      try {
+        const user = await api<Account>('/account')
+        if (active) {
+          setAccount(current => current ?? user)
+          setError('')
+        }
+        retryOnReconnect = false
+      } catch (error) {
+        retryOnReconnect = !(error instanceof ApiError && error.status === 401)
+        if (active) {
+          if (retryOnReconnect) setError(errorMessage(error))
+          setAccount(current => current ?? null)
+        }
+      } finally { checking = false }
+    }
+    const online = () => { if (retryOnReconnect) void loadAccount() }
+    window.addEventListener('online', online)
+    void loadAccount()
+    return () => { active = false; window.removeEventListener('online', online) }
   }, [])
   function signedOut() {
     setInviteToken('')
     setAccount(null)
+    if (account) {
+      void purgeOutbox(account.id).catch(() => {
+        setError('Signed out. The local message queue could not be cleared.')
+      })
+    }
     navigate('/login', { replace: true })
   }
   if (location.pathname === '/i' || location.pathname.startsWith('/i/') || location.pathname.startsWith('/invite/')) {
@@ -271,7 +297,7 @@ function App() {
   if (location.pathname === '/login' || location.pathname === '/register') {
     return <Navigate to={location.state?.returnTo ?? '/chats'} replace />
   }
-  return <Workspace account={account} onAccount={setAccount} signOut={signedOut} />
+  return <Workspace key={account.id} account={account} onAccount={setAccount} signOut={signedOut} />
 }
 
 createRoot(document.getElementById('root')!).render(<BrowserRouter><App /></BrowserRouter>)
