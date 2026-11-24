@@ -49,5 +49,6 @@ Tests create disposable accounts and use synthetic mail. Running the whole suite
 - [Offline text outbox architecture](docs/adr/0006-offline-text-outbox.md)
 - [Private read cursor architecture](docs/adr/0007-private-read-cursors.md)
 - [Shared read receipt architecture](docs/adr/0008-shared-read-receipts.md)
+- [Group member administration](docs/adr/0009-group-member-administration.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
