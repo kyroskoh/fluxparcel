@@ -119,7 +119,7 @@ test('responsive navigation at reference widths', async ({ page, request, baseUR
     await page.getByRole('link', { name: 'Back to chats' }).click()
     await expect(page).toHaveURL(/\/chats$/)
     await page.getByRole('link', { name: 'Transfers' }).click()
-    await expect(page.getByRole('heading', { name: 'Transfers' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Transfers', exact: true })).toBeVisible()
     await page.goBack()
     await expect(page.getByRole('heading', { name: 'Chats' })).toBeVisible()
   } finally {
