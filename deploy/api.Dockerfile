@@ -7,7 +7,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /fluxparcel ./cmd/fluxp
 
 FROM alpine:3.23
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build /fluxparcel /usr/local/bin/fluxparcel
+COPY --chmod=755 --from=build /fluxparcel /usr/local/bin/fluxparcel
 USER 65532:65532
 ENTRYPOINT ["fluxparcel"]
 CMD ["api"]

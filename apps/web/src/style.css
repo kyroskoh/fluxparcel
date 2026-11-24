@@ -120,3 +120,21 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
   .chat-direct .conversation { min-height: 100%; padding-top: 3.5rem; }
   .mobile-back { position: absolute; top: .2rem; left: .5rem; display: flex; gap: .35rem; min-height: 44px; align-items: center; color: var(--accent); }
 }
+
+.chat-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.chat-sidebar header .chat-actions { margin-top: .9rem; }
+.group-list { margin-top: 1rem; }
+.group-list a { display: flex; align-items: center; gap: .55rem; min-height: 44px; padding: .55rem; overflow-wrap: anywhere; border-radius: 10px; }
+.group-list a svg { flex: none; }
+.group-list a.active, .group-list a:hover { background: var(--soft); color: var(--accent); }
+.open-conversation { display: flex; flex-direction: column; align-items: stretch; }
+.group-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .65rem; padding: .75rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.invite-panel { margin-block: .65rem; }
+.invite-panel .action-form:first-child { margin-top: 0; }
+.message-list { flex: 1; max-height: 60dvh; overflow-y: auto; min-height: 8rem; display: flex; flex-direction: column; gap: .6rem; padding: .75rem 0; }
+.message-list li { align-self: flex-start; max-width: min(85%, 54ch); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .5rem .7rem; }
+.message-list .own-message { align-self: flex-end; background: var(--soft); }
+.message-list p { white-space: pre-wrap; }
+.message-list time { display: block; font-size: .75rem; color: var(--muted); }
+.composer { position: sticky; bottom: 0; padding: .65rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+@media (max-width: 767px) { .composer { position: static; } }

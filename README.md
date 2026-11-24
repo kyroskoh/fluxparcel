@@ -4,7 +4,7 @@
 
 [FluxParcel.xyz](https://fluxparcel.xyz)
 
-FluxParcel is a self-hosted browser workspace for messaging and file sharing. The foundation includes account management and a responsive workspace shell. Messaging, QR invitations, transfers, compression and search are planned in the roadmap.
+FluxParcel is a self-hosted browser workspace for messaging and file sharing. The app supports accounts, private group text chat and group QR invitation links. The roadmap tracks direct chats, contact invitations, file transfers, compression and search.
 
 ## Local development
 
@@ -42,5 +42,6 @@ Tests create disposable accounts and use synthetic mail. GitHub Actions runs the
 - [Roadmap](ROADMAP.md)
 - [Implementation progress](docs/progress.md)
 - [Foundation architecture](docs/adr/0001-foundation.md)
+- [Private group chat architecture](docs/adr/0002-private-group-chat.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
