@@ -230,5 +230,6 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		failure(w, r)
 		return
 	}
+	s.notifyMessage(ctx, id)
 	respond(w, 201, item)
 }

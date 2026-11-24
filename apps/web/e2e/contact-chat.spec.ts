@@ -23,6 +23,11 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     expect((await page.request.delete('/v1/contact-invitations/' + extra.id, { headers })).status()).toBe(204)
     expect((await outsider.request.post('/v1/contact-invitations/inspect', { headers, data: { token: revokedToken } })).status()).toBe(404)
 
+    let unavailableSocketAttempts = 0
+    await page.routeWebSocket(/\/v1\/events\?/, socket => {
+      unavailableSocketAttempts++
+      void socket.close({ code: 1013, reason: 'Socket unavailable in test' })
+    })
     await page.goto('/contacts')
     await page.getByRole('button', { name: 'Create invitation' }).click()
     await expect(page.getByAltText('QR code for this contact invitation')).toBeVisible()
@@ -82,6 +87,7 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     expect((await outsider.request.get(messages)).status()).toBe(404)
     expect((await page.request.post('/v1/invitations', { headers, data: { conversationId: id } })).status()).toBe(404)
     expect((await recipient.request.post(messages, { headers, data: { clientId: randomUUID(), body: 'Hello from the direct chat' } })).status()).toBe(201)
+    await expect.poll(() => unavailableSocketAttempts).toBeGreaterThan(0)
     await expect(page.getByText('Hello from the direct chat')).toBeVisible()
     const declinable = await (await page.request.post('/v1/contact-invitations', { headers, data: {} })).json()
     const declineToken = new URL(declinable.url).hash.slice('#contact_'.length)
