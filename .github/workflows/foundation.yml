@@ -20,7 +20,7 @@ jobs:
           cache: npm
       - uses: actions/setup-go@v6
         with:
-          go-version-file: apps/api/go.mod
+          go-version: "1.25.x"
           cache-dependency-path: apps/api/go.sum
       - run: npm ci
       - run: npm audit --audit-level=high
