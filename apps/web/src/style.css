@@ -145,3 +145,7 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .qr-image-label input { width: 100%; min-height: 44px; }
 .qr-image-label input::file-selector-button { margin-right: .6rem; }
 .qr-result { display: grid; gap: .45rem; }
+
+.chat-list-title { min-width: 0; overflow-wrap: anywhere; }
+.unread-badge { margin-left: auto; flex: none; border-radius: 100px; padding: .15rem .5rem; background: var(--soft); color: var(--accent); font-weight: 700; font-size: .8rem; }
+.message-list .read-marker { align-self: stretch; flex: none; height: 1px; padding: 0; border: 0; background: transparent; }

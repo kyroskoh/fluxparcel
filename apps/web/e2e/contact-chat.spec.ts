@@ -10,6 +10,7 @@ test('contact approval opens exactly one private direct conversation', async ({ 
   const headers = { Origin: origin }
   const recipient = await browser.newContext({ baseURL })
   const outsider = await browser.newContext({ baseURL })
+  const secondDevice = await browser.newContext({ baseURL })
   const clients = [page.request, recipient.request, outsider.request]
   let recipientDeleted = false
   try {
@@ -84,7 +85,7 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     await expect(page.getByRole('heading', { name: 'Contact Recipient' })).toBeVisible()
     const id = page.url().split('/').at(-1)
     const matches = await (await recipient.request.get('/v1/conversations')).json()
-    expect(matches).toEqual([{ id, title: 'Contact Issuer', role: 'member', kind: 'direct' }])
+    expect(matches).toEqual([{ id, title: 'Contact Issuer', role: 'member', kind: 'direct', unread: 0 }])
     const messages = '/v1/conversations/' + id + '/messages'
     expect((await outsider.request.get(messages)).status()).toBe(404)
     expect((await page.request.post('/v1/invitations', { headers, data: { conversationId: id } })).status()).toBe(404)
@@ -96,6 +97,42 @@ test('contact approval opens exactly one private direct conversation', async ({ 
       headers, data: { clientId: randomUUID(), body: 'Wrong account', expectedSenderId: owner.id },
     })).status()).toBe(403)
     await checkOfflineOutbox(page, messages, 'Contact Recipient')
+    const read = '/v1/conversations/' + id + '/read'
+    expect((await outsider.request.post(read, { headers, data: { sequence: 1 } })).status()).toBe(404)
+    expect((await recipient.request.post(read, { headers, data: { sequence: 9999 } })).status()).toBe(404)
+    expect((await secondDevice.request.post('/v1/auth/login', {
+      headers, data: { email: recipientEmail, password },
+    })).status()).toBe(200)
+    const unreadCount = async () => {
+      const conversations = await (await secondDevice.request.get('/v1/conversations')).json()
+      return conversations[0]?.unread
+    }
+    expect(await unreadCount()).toBe(3)
+    expect((await secondDevice.request.get(messages)).status()).toBe(200)
+    expect(await unreadCount()).toBe(3)
+    expect((await secondDevice.request.post(read, {
+      headers, data: { sequence: 4, expectedAccountId: owner.id },
+    })).status()).toBe(403)
+    const background = await secondDevice.newPage()
+    await background.addInitScript(() => {
+      Object.defineProperty(document, 'visibilityState', { get: () => 'hidden' })
+    })
+    await background.goto('/chats/' + id)
+    await expect(background.getByText('Committed before the response was lost')).toBeVisible()
+    expect(await unreadCount()).toBe(3)
+    await background.close()
+    await peer.bringToFront()
+    await peer.goto('/chats')
+    await expect(peer.getByLabel('3 unread messages')).toBeVisible()
+    await peer.getByRole('link', { name: /Contact Issuer/ }).click()
+    await expect(peer.getByRole('heading', { name: 'Contact Issuer' })).toBeVisible()
+    await expect.poll(unreadCount).toBe(0)
+    await peer.goto('/chats')
+    await expect(peer.getByLabel(/unread messages?/)).toHaveCount(0)
+    await expect.poll(async () => {
+      const retry = await secondDevice.request.post(read, { headers, data: { sequence: 2 } })
+      return (await retry.json()).sequence
+    }).toBe(4)
     await checkOutboxSignOut(page, messages)
     expect((await page.request.post('/v1/auth/login', { headers, data: { email: senderEmail, password } })).status()).toBe(200)
     const declinable = await (await page.request.post('/v1/contact-invitations', { headers, data: {} })).json()
@@ -109,6 +146,6 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     expect((await page.request.get(messages)).status()).toBe(404)
   } finally {
     await Promise.all(clients.filter(client => !recipientDeleted || client !== recipient.request).map(client => client.delete('/v1/account', { headers, data: { password } })))
-    await Promise.all([recipient.close(), outsider.close()])
+    await Promise.all([recipient.close(), outsider.close(), secondDevice.close()])
   }
 })
