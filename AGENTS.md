@@ -1,0 +1,3 @@
+# Agent instructions
+
+Read PRD.md before implementation. Follow P0 requirements first; document deviations in ADRs. Use React/TypeScript/Vite and Go, PostgreSQL, Redis and S3-compatible storage. Keep browser capability detection explicit; never promise background transfers. Implement authorization on every resource and search result. Never log secrets or file contents. Use bounded streaming, durable checkpoints, idempotency and checksum validation. Test desktop and mobile browsers, network interruptions, manual pause, archive resource limits and permission revocation. Run lint, type checks, unit and integration tests before proposing changes. Do not commit credentials or claim untested features work.
