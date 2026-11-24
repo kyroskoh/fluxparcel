@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
+import QRCode from 'qrcode'
 import { password, register, verifyEmail } from './chat-fixtures'
 
 test('contact approval opens exactly one private direct conversation', async ({ page, browser, request, baseURL }) => {
@@ -30,7 +31,26 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     expect((await page.request.post('/v1/contact-invitations/redeem', { headers, data: { token } })).status()).toBe(404)
 
     const peer = await recipient.newPage()
-    await peer.goto(url)
+    await peer.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Denied by test', 'NotAllowedError') }
+    })
+    await peer.goto('/chats')
+    await peer.getByRole('button', { name: 'Open invite' }).click()
+    await peer.getByRole('button', { name: 'Scan with camera' }).click()
+    await expect(peer.getByText('Camera permission was denied.', { exact: false })).toBeVisible()
+    await peer.getByLabel('Invitation link').fill('https://outside.example/i#' + 'x'.repeat(43))
+    await peer.getByRole('button', { name: 'Preview invitation', exact: true }).click()
+    await expect(peer.getByText('Enter a valid FluxParcel invitation link from this server.')).toBeVisible()
+
+    const imageInput = peer.getByLabel('Choose QR image')
+    const foreign = await QRCode.toBuffer('https://outside.example/i#' + 'x'.repeat(43))
+    await imageInput.setInputFiles({ name: 'foreign.png', mimeType: 'image/png', buffer: foreign })
+    await expect(peer.getByText('This QR code is not a FluxParcel invitation from this server.')).toBeVisible()
+    await expect(peer).toHaveURL(/\/chats$/)
+    await imageInput.setInputFiles({ name: 'invite.png', mimeType: 'image/png', buffer: await QRCode.toBuffer(url) })
+    await expect(peer.getByText('Contact invitation found.')).toBeVisible()
+    await expect(peer).toHaveURL(/\/chats$/)
+    await peer.getByRole('button', { name: 'Review scanned invitation' }).click()
     await expect(peer.getByText('Contact Issuer')).toBeVisible()
     expect(await (await page.request.get('/v1/contact-requests')).json()).toEqual([])
     await peer.getByRole('button', { name: 'Send contact request' }).click()

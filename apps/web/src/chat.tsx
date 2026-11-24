@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Inbox, MessageCircle } from 'lucide-react'
 import QRCode from 'qrcode'
+import { InviteScanner } from './invite-scanner'
+import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct' }
@@ -41,12 +43,18 @@ export function Chats({ account }: { account: Account }) {
   function openInvite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const value = String(new FormData(event.currentTarget).get('link')).trim()
-    try {
-      const link = new URL(value)
-      if (link.origin !== location.origin || link.pathname !== '/i' || !inviteFragment.test(link.hash)) throw new Error()
-      setJoining(false)
-      navigate('/i' + link.hash)
-    } catch { setError('Enter a valid FluxParcel invitation link from this server.') }
+    const path = invitePath(value, window.location.origin)
+    if (!path) {
+      setError('Enter a valid FluxParcel invitation link from this server.')
+      return
+    }
+    previewInvite(path)
+  }
+
+  function previewInvite(path: string) {
+    setJoining(false)
+    setError('')
+    navigate(path)
   }
 
   return <div className={'chat-layout ' + (id ? 'chat-direct' : '')}>
@@ -60,10 +68,13 @@ export function Chats({ account }: { account: Account }) {
         <label>Group name<input name="title" required maxLength={80} /></label>
         <button className="primary" disabled={busy}>Create group</button>
       </form>}
-      {joining && <form className="action-form" onSubmit={openInvite}>
-        <label>Invitation link<input name="link" type="url" required /></label>
-        <button className="primary">Preview invitation</button>
-      </form>}
+      {joining && <>
+        <InviteScanner onPreview={previewInvite} />
+        <form className="action-form" onSubmit={openInvite}>
+          <label>Invitation link<input name="link" type="url" required /></label>
+          <button className="primary">Preview invitation</button>
+        </form>
+      </>}
       {error && <p role="alert" className="error">{error}</p>}
       {groups?.length === 0 && <div className="chat-list-empty"><Inbox size={20} aria-hidden /><div><strong>No conversations</strong><p>Your chats will appear here.</p></div></div>}
       <ul className="group-list">{groups?.map(group => <li key={group.id}>
@@ -233,8 +244,6 @@ export function InvitationManager({ group }: { group?: Conversation }) {
     </li>)}</ul>
   </div>
 }
-
-export const inviteFragment = /^#(?:contact_)?[\w-]{43}$/
 
 export function InviteReview({ token, account, authenticated }: { token: string; account: Account | null; authenticated: boolean }) {
   const [preview, setPreview] = useState<{ title: string; issuer: string; expiresAt: string }>()

@@ -44,5 +44,6 @@ Tests create disposable accounts and use synthetic mail. GitHub Actions runs the
 - [Foundation architecture](docs/adr/0001-foundation.md)
 - [Private group chat architecture](docs/adr/0002-private-group-chat.md)
 - [Contact approval architecture](docs/adr/0003-contact-approval.md)
+- [Invitation scanning architecture](docs/adr/0004-invitation-scanning.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

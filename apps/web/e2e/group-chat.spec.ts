@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
+import QRCode from 'qrcode'
 import { password, register, verifyEmail } from './chat-fixtures'
 
 test('private group invitations, atomic redemption and durable message synchronization', async ({ browser, page, request, baseURL }) => {
@@ -29,6 +30,41 @@ test('private group invitations, atomic redemption and durable message synchroni
     const inviteToken = new URL(link).hash.slice(1)
     expect(inviteToken).toHaveLength(43)
 
+    const scanner = await member.newPage()
+    await scanner.addInitScript(uri => {
+      navigator.mediaDevices.getUserMedia = async () => {
+        const image = new Image()
+        image.src = uri
+        await image.decode()
+        const canvas = document.createElement('canvas')
+        canvas.width = image.width
+        canvas.height = image.height
+        const context = canvas.getContext('2d')!
+        const stream = canvas.captureStream(15)
+        const track = stream.getVideoTracks()[0]
+        const draw = () => context.drawImage(image, 0, 0)
+        const interval = setInterval(draw, 70)
+        const stop = track.stop.bind(track)
+        track.stop = () => {
+          clearInterval(interval)
+          stop()
+          document.documentElement.dataset.testCameraStopped = String(track.readyState === 'ended')
+        }
+        draw()
+        return stream
+      }
+    }, await QRCode.toDataURL(link, { width: 400 }))
+    await scanner.goto('/chats')
+    await scanner.getByRole('button', { name: 'Open invite' }).click()
+    await scanner.getByRole('button', { name: 'Scan with camera' }).click()
+    await expect(scanner.getByText('Group invitation found.')).toBeVisible()
+    await expect(scanner.locator('html')).toHaveAttribute('data-test-camera-stopped', 'true')
+    await expect(scanner).toHaveURL(/\/chats$/)
+    await scanner.getByRole('button', { name: 'Review scanned invitation' }).click()
+    await expect(scanner.getByText('Group Owner')).toBeVisible()
+    expect((await member.request.get(endpoint)).status()).toBe(404)
+
+    await scanner.close()
     expect((await member.request.post('/v1/auth/logout', { headers })).status()).toBe(204)
     const recipient = await member.newPage()
     await recipient.goto(link)
