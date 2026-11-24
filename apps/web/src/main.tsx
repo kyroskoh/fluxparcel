@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { ArrowDownUp, ArrowLeft, ArrowRight, CircleHelp, Inbox, LockKeyhole, LogOut, Mail, MessageCircle, Moon, Settings as Gear, Sun, UserRound } from 'lucide-react'
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { ArrowDownUp, ArrowRight, CircleHelp, LockKeyhole, LogOut, Mail, MessageCircle, Moon, Settings as Gear, Sun, UserRound } from 'lucide-react'
 import { api, ApiError, errorMessage, type Account, type Device } from './api'
+import { Chats, InviteReview } from './chat'
 import './style.css'
 
 function Brand() {
@@ -34,7 +35,6 @@ function ActionForm({ children, label, action }: {
 }
 
 function AuthScreen({ register, onAccount }: { register: boolean; onAccount: (account: Account) => void }) {
-  const navigate = useNavigate()
   const location = useLocation()
   return <main className="auth-layout">
     <aside className="auth-aside">
@@ -60,7 +60,6 @@ function AuthScreen({ register, onAccount }: { register: boolean; onAccount: (ac
         <ActionForm key={String(register)} label={register ? 'Create account' : 'Sign in'} action={async data => {
           const account = await api<Account>(register ? '/auth/register' : '/auth/login', 'POST', Object.fromEntries(data), false)
           onAccount(account)
-          navigate(location.state?.returnTo ?? '/chats', { replace: true })
         }}>
           {register && <>
             <label>Display name<input name="displayName" autoComplete="name" maxLength={80} required /></label>
@@ -164,25 +163,6 @@ function Settings({ account, onAccount, signOut }: {
   </div>
 }
 
-function Chats() {
-  const { id } = useParams()
-  return <div className={'chat-layout ' + (id ? 'chat-direct' : '')}>
-    <aside className="chat-sidebar">
-      <header><h1>Chats</h1></header>
-      <div className="chat-list-empty"><Inbox size={20} aria-hidden /><div><strong>No conversations</strong><p>Your chats will appear here.</p></div></div>
-    </aside>
-    <section className="conversation" aria-label="Conversation">
-      {id && <Link className="mobile-back" to="/chats"><ArrowLeft size={18} aria-hidden /> Back to chats</Link>}
-      <div className="empty-conversation">
-        <div className="conversation-icon"><MessageCircle size={43} strokeWidth={1.5} aria-hidden /></div>
-        <h2>{id ? 'Conversation unavailable' : 'No conversation selected'}</h2>
-        <p>Messaging will be available in a later release.</p>
-        {id && <Link to="/chats" className="secondary">Open chats</Link>}
-      </div>
-    </section>
-  </div>
-}
-
 function Workspace({ account, onAccount, signOut }: { account: Account; onAccount: (user: Account) => void; signOut: () => void }) {
   const [offline, setOffline] = useState(!navigator.onLine)
   const [dark, setDark] = useState(() => localStorage.getItem('fluxparcel-theme') === 'dark'
@@ -227,8 +207,8 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
       </nav>
       <main id="content" tabIndex={-1}>
         <Routes>
-          <Route path="/chats" element={<Chats />} />
-          <Route path="/chats/:id" element={<Chats />} />
+          <Route path="/chats" element={<Chats account={account} />} />
+          <Route path="/chats/:id" element={<Chats account={account} />} />
           <Route path="/transfers" element={<div className="settings-content">
             <header className="page-heading"><span className="section-icon"><ArrowDownUp size={23} aria-hidden /></span><h1>Transfers</h1></header>
             <section className="settings-card"><h2>No transfers</h2><p className="muted">File sharing will be available in a later release.</p></section>
@@ -246,6 +226,13 @@ function App() {
   const [error, setError] = useState('')
   const navigate = useNavigate()
   const location = useLocation()
+  const [inviteToken, setInviteToken] = useState('')
+  useEffect(() => {
+    if (location.pathname === '/i' && location.hash) {
+      setInviteToken(/^#[\w-]{43}$/.test(location.hash) ? location.hash.slice(1) : '')
+      navigate('/i', { replace: true })
+    }
+  }, [location.hash, location.pathname, navigate])
   useEffect(() => {
     let active = true
     api<Account>('/account').then(account => { if (active) setAccount(account) }).catch(error => {
@@ -256,14 +243,13 @@ function App() {
     return () => { active = false }
   }, [])
   function signedOut() {
+    setInviteToken('')
     setAccount(null)
     navigate('/login', { replace: true })
   }
-  if (location.pathname.startsWith('/i/') || location.pathname.startsWith('/invite/')) {
-    return <main className="standalone"><section className="settings-card">
-      <Brand /><h1>Invitation unavailable</h1><p>Invitations will be available in a later release.</p>
-      <Link to="/chats">Open FluxParcel</Link>
-    </section></main>
+  if (location.pathname === '/i' || location.pathname.startsWith('/i/') || location.pathname.startsWith('/invite/')) {
+    const token = location.pathname === '/i' && !location.hash ? inviteToken : ''
+    return <InviteReview key={token} token={token} account={account ?? null} authenticated={account !== undefined} />
   }
   if (location.pathname === '/verify') return <VerifyEmail reload={async () => {
     if (!account) return
@@ -278,6 +264,9 @@ function App() {
     }
     return <>{error && <p role="status" className="banner">{error}</p>}
       <AuthScreen register={location.pathname === '/register'} onAccount={user => { setError(''); setAccount(user) }} /></>
+  }
+  if (location.pathname === '/login' || location.pathname === '/register') {
+    return <Navigate to={location.state?.returnTo ?? '/chats'} replace />
   }
   return <Workspace account={account} onAccount={setAccount} signOut={signedOut} />
 }

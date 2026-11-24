@@ -41,9 +41,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
-		respond(w, 200, map[string]bool{"messaging": false, "transfers": false, "invitations": false, "webPush": false})
+		respond(w, 200, map[string]bool{"messaging": true, "transfers": false, "invitations": true, "webPush": false})
 	})
-	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 12, s.boundPasswordWork(s.register)))
+	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 24, s.boundPasswordWork(s.register)))
 	mux.HandleFunc("POST /v1/auth/login", s.limit("login", 20, s.boundPasswordWork(s.login)))
 	mux.HandleFunc("POST /v1/auth/refresh", s.limit("refresh", 90, s.refresh))
 	mux.HandleFunc("POST /v1/auth/logout", s.logout)
@@ -51,9 +51,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/verification", s.limit("verification", 8, s.resend))
 	mux.HandleFunc("GET /v1/account", s.account)
 	mux.HandleFunc("PATCH /v1/account", s.updateAccount)
-	mux.HandleFunc("DELETE /v1/account", s.limit("delete-account", 8, s.boundPasswordWork(s.deleteAccount)))
+	mux.HandleFunc("DELETE /v1/account", s.limit("delete-account", 24, s.boundPasswordWork(s.deleteAccount)))
 	mux.HandleFunc("GET /v1/account/devices", s.devices)
 	mux.HandleFunc("DELETE /v1/account/devices/{id}", s.revokeDevice)
+	s.chatRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 404, "not_found", "Endpoint unavailable.")
 	})
