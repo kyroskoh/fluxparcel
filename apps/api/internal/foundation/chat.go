@@ -29,12 +29,27 @@ type message struct {
 	Created  time.Time `json:"createdAt"`
 }
 
+type reader struct {
+	UserID      string `json:"userId"`
+	DisplayName string `json:"displayName"`
+	Sequence    int64  `json:"sequence"`
+}
+
+type receipts struct {
+	Sharing bool     `json:"sharing"`
+	Readers []reader `json:"readers"`
+}
+
+// maxReceiptReaders bounds the receipt response for large groups.
+const maxReceiptReaders = 200
+
 func (s *Server) chatRoutes(mux *http.ServeMux) {
 	s.contactRoutes(mux)
 	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("POST /v1/conversations", s.limit("group-create", 20, s.createGroup))
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.listMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/read", s.limit("read-cursor", 120, s.markConversationRead))
+	mux.HandleFunc("GET /v1/conversations/{id}/receipts", s.listReceipts)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", s.limit("message-send", 120, s.sendMessage))
 	mux.HandleFunc("GET /v1/conversations/{id}/invitations", s.listGroupInvites)
 	mux.HandleFunc("POST /v1/invitations", s.limit("invite-create", 30, s.createGroupInvite))
@@ -140,8 +155,65 @@ func (s *Server) markConversationRead(w http.ResponseWriter, r *http.Request) {
           AND m.user_id=$2 AND $3 < c.next_sequence RETURNING m.read_sequence`,
 		id, user.ID, input.Sequence).Scan(&acknowledged)
 	if chatResult(w, r, err) {
+		if user.ShareReadReceipts {
+			// Wake other open chats so senders see the shared receipt without waiting for polling.
+			s.notifyMessage(r.Context(), id)
+		}
 		respond(w, 200, map[string]int64{"sequence": acknowledged})
 	}
+}
+
+// listReceipts returns the read cursors that other members share. Sharing is reciprocal:
+// an account that does not share its own receipts sees none. Private cursors and unread
+// counts are unaffected by the setting.
+func (s *Server) listReceipts(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if !uuidPattern.MatchString(id) {
+		missing(w, r)
+		return
+	}
+	// One statement checks membership and both sharing preferences on the same snapshot.
+	rows, err := s.DB.Query(r.Context(), `SELECT viewer.share_read_receipts,
+            COALESCE(other.user_id::text,''),COALESCE(other.display_name,''),COALESCE(other.read_sequence,0)
+        FROM memberships m JOIN users viewer ON viewer.id=m.user_id
+        LEFT JOIN LATERAL (
+            SELECT o.user_id,u.display_name,o.read_sequence FROM memberships o JOIN users u ON u.id=o.user_id
+            WHERE o.conversation_id=m.conversation_id AND o.user_id<>m.user_id AND o.read_sequence>0
+              AND u.share_read_receipts AND viewer.share_read_receipts
+            ORDER BY o.read_sequence DESC,o.user_id LIMIT $3
+        ) other ON true
+        WHERE m.conversation_id=$1 AND m.user_id=$2`, id, user.ID, maxReceiptReaders)
+	if err != nil {
+		failure(w, r)
+		return
+	}
+	defer rows.Close()
+	result := receipts{Readers: []reader{}}
+	found := false
+	for rows.Next() {
+		found = true
+		var item reader
+		if err := rows.Scan(&result.Sharing, &item.UserID, &item.DisplayName, &item.Sequence); err != nil {
+			failure(w, r)
+			return
+		}
+		if item.UserID != "" {
+			result.Readers = append(result.Readers, item)
+		}
+	}
+	if rows.Err() != nil {
+		failure(w, r)
+		return
+	}
+	if !found {
+		missing(w, r)
+		return
+	}
+	respond(w, 200, result)
 }
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {

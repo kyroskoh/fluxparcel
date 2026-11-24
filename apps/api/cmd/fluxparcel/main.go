@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -102,9 +103,17 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 	if sender, err := mail.ParseAddress(from); err != nil || sender.Address != from {
 		return fmt.Errorf("invalid SMTP_FROM")
 	}
+	rateLimitScale := int64(1)
+	if value := os.Getenv("RATE_LIMIT_SCALE"); value != "" {
+		rateLimitScale, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || rateLimitScale < 1 || rateLimitScale > 20 {
+			return fmt.Errorf("RATE_LIMIT_SCALE must be between 1 and 20")
+		}
+	}
 	app := &foundation.Server{
 		DB: db, Cache: cache, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), Origin: origin,
 		SecureCookies: public.Scheme == "https", TrustProxy: os.Getenv("TRUST_PROXY") == "true",
+		RateLimitScale: rateLimitScale,
 		SendVerification: func(ctx context.Context, to, token string) error {
 			dialer := net.Dialer{Timeout: 3 * time.Second}
 			conn, err := dialer.DialContext(ctx, "tcp", smtpAddress)

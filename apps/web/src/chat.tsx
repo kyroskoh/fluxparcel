@@ -9,6 +9,7 @@ import { api, ApiError, errorMessage, type Account } from './api'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
 type Message = { sequence: number; clientId: string; senderId: string; sender: string; body: string; createdAt: string }
+type Receipts = { sharing: boolean; readers: { userId: string; displayName: string; sequence: number }[] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
 export function Chats({ account, outbox }: { account: Account; outbox: Outbox }) {
@@ -125,6 +126,8 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
   const [syncError, setSyncError] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
+  const [receipts, setReceipts] = useState<Receipts>({ sharing: false, readers: [] })
+  const [syncRevision, setSyncRevision] = useState(0)
   const conversationPath = '/conversations/' + group.id
   const endpoint = conversationPath + '/messages'
   const marker = useRef<HTMLLIElement>(null)
@@ -220,6 +223,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
           setMessages(current => [...current, ...page])
         }
         setSyncError('')
+        setSyncRevision(current => current + 1)
         retry = 2000
         if (page.length < 100) next = socket && socket.readyState === WebSocket.OPEN ? 15000 : 2000
       } catch (error) {
@@ -302,6 +306,23 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
     }
   }, [endpoint, group.id])
 
+  useEffect(() => {
+    if (unavailable || syncRevision === 0) return
+    const controller = new AbortController()
+    // The server applies both accounts' sharing preferences; a failed refresh keeps the last known receipts.
+    api<Receipts>(conversationPath + '/receipts', 'GET', undefined, true, controller.signal)
+      .then(result => { if (!controller.signal.aborted) setReceipts(result) })
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [account.shareReadReceipts, conversationPath, syncRevision, unavailable])
+
+  function receiptLabel(sequence: number) {
+    if (!receipts.sharing || !account.shareReadReceipts) return ''
+    const readers = receipts.readers.filter(reader => reader.sequence >= sequence).length
+    if (readers === 0) return 'Sent'
+    return group.kind === 'direct' ? 'Read' : 'Read by ' + readers
+  }
+
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (sending || unavailable) return
@@ -331,6 +352,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
       {messages.map(message => <li className={message.senderId === account.id ? 'own-message' : ''} key={message.sequence}>
         <strong>{message.sender}</strong><p>{message.body}</p>
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
+        {message.senderId === account.id && receiptLabel(message.sequence) && <small className="receipt">{receiptLabel(message.sequence)}</small>}
       </li>)}
       {hasMessages && <li ref={marker} className="read-marker" aria-hidden="true" />}
       {pending.map(item => <li className="own-message" key={item.clientId}>
