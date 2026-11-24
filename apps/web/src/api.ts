@@ -4,6 +4,7 @@ export type Account = {
   username: string
   displayName: string
   verified: boolean
+  shareReadReceipts: boolean
 }
 
 export type Device = {

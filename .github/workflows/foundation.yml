@@ -39,6 +39,8 @@ jobs:
             echo "::add-mask::$value"
             printf '%s=%s\n' "$name" "$value" >> .env
           done
+          # The suite creates and deletes more disposable accounts per minute than the production limits allow.
+          echo "RATE_LIMIT_SCALE=5" >> .env
       - run: docker compose up --build --wait
       - run: docker compose run --rm --no-deps migrate
       - run: npx playwright install --with-deps chromium

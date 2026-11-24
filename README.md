@@ -36,7 +36,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Tests create disposable accounts and use synthetic mail. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
+Tests create disposable accounts and use synthetic mail. Running the whole suite more than once a minute can exceed the per-address rate limits. For a disposable stack, start Compose with `RATE_LIMIT_SCALE=5` as CI does. Leave it unset elsewhere. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
 
 - [Product requirements](PRD.md)
 - [Roadmap](ROADMAP.md)
@@ -48,5 +48,6 @@ Tests create disposable accounts and use synthetic mail. GitHub Actions runs the
 - [Live message synchronization architecture](docs/adr/0005-live-message-sync.md)
 - [Offline text outbox architecture](docs/adr/0006-offline-text-outbox.md)
 - [Private read cursor architecture](docs/adr/0007-private-read-cursors.md)
+- [Shared read receipt architecture](docs/adr/0008-shared-read-receipts.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

@@ -67,3 +67,11 @@ func TestProductionCookies(t *testing.T) {
 		t.Fatal("unexpected credential scopes")
 	}
 }
+
+func TestRateLimitScaleKeepsProductionDefaults(t *testing.T) {
+	for scale, want := range map[int64]int64{0: 24, 1: 24, 5: 120} {
+		if got := (&Server{RateLimitScale: scale}).scaledLimit(24); got != want {
+			t.Fatalf("scale %d: got %d, want %d", scale, got, want)
+		}
+	}
+}
