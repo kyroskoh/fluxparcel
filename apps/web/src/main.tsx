@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowDownUp, ArrowRight, CircleHelp, LockKeyhole, LogOut, Mail, MessageCircle, Moon, Settings as Gear, Sun, UserRound } from 'lucide-react'
 import { api, ApiError, errorMessage, type Account, type Device } from './api'
-import { Chats, InviteReview } from './chat'
+import { Chats, InviteReview, inviteFragment } from './chat'
+import { Contacts } from './contacts'
 import './style.css'
 
 function Brand() {
@@ -209,6 +210,7 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
         <Routes>
           <Route path="/chats" element={<Chats account={account} />} />
           <Route path="/chats/:id" element={<Chats account={account} />} />
+          <Route path="/contacts" element={<Contacts account={account} />} />
           <Route path="/transfers" element={<div className="settings-content">
             <header className="page-heading"><span className="section-icon"><ArrowDownUp size={23} aria-hidden /></span><h1>Transfers</h1></header>
             <section className="settings-card"><h2>No transfers</h2><p className="muted">File sharing will be available in a later release.</p></section>
@@ -229,7 +231,7 @@ function App() {
   const [inviteToken, setInviteToken] = useState('')
   useEffect(() => {
     if (location.pathname === '/i' && location.hash) {
-      setInviteToken(/^#[\w-]{43}$/.test(location.hash) ? location.hash.slice(1) : '')
+      setInviteToken(inviteFragment.test(location.hash) ? location.hash.slice(1) : '')
       navigate('/i', { replace: true })
     }
   }, [location.hash, location.pathname, navigate])
@@ -258,7 +260,7 @@ function App() {
   if (account === undefined) return <main className="standalone"><p role="status">Loading FluxParcel…</p></main>
   if (!account) {
     if (location.pathname !== '/login' && location.pathname !== '/register') {
-      const returnTo = /^\/(chats(?:\/[a-zA-Z0-9_-]+)?|settings|transfers)$/.test(location.pathname)
+      const returnTo = /^\/(chats(?:\/[a-zA-Z0-9_-]+)?|settings|transfers|contacts)$/.test(location.pathname)
         ? location.pathname : '/chats'
       return <Navigate to="/login" state={{ returnTo }} replace />
     }

@@ -16,6 +16,7 @@ type conversation struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Role  string `json:"role"`
+	Kind  string `json:"kind"`
 }
 
 type message struct {
@@ -28,7 +29,8 @@ type message struct {
 }
 
 func (s *Server) chatRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/conversations", s.listGroups)
+	s.contactRoutes(mux)
+	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("POST /v1/conversations", s.limit("group-create", 20, s.createGroup))
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.listMessages)
 	mux.HandleFunc("POST /v1/conversations/{id}/messages", s.limit("message-send", 120, s.sendMessage))
@@ -52,13 +54,16 @@ func chatResult(w http.ResponseWriter, r *http.Request, err error) bool {
 	return err == nil
 }
 
-func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	user, _, ok := s.authenticate(w, r)
 	if !ok {
 		return
 	}
-	rows, err := s.DB.Query(r.Context(), `SELECT c.id,c.title,m.role FROM memberships m
-        JOIN conversations c ON c.id=m.conversation_id WHERE m.user_id=$1 ORDER BY c.created_at DESC,c.id`, user.ID)
+	rows, err := s.DB.Query(r.Context(), `SELECT c.id,COALESCE(peer.display_name,c.title),m.role,c.kind
+        FROM memberships m JOIN conversations c ON c.id=m.conversation_id
+        LEFT JOIN direct_pairs p ON p.conversation_id=c.id
+        LEFT JOIN users peer ON peer.id=CASE WHEN p.first_user=m.user_id THEN p.second_user ELSE p.first_user END
+        WHERE m.user_id=$1 ORDER BY c.created_at DESC,c.id`, user.ID)
 	if err != nil {
 		failure(w, r)
 		return
@@ -88,7 +93,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 400, "invalid_title", "Enter a group name of 1–80 characters.")
 		return
 	}
-	result := conversation{Title: title, Role: "owner"}
+	result := conversation{Title: title, Role: "owner", Kind: "group"}
 	err := s.DB.QueryRow(r.Context(), `WITH created AS (
         INSERT INTO conversations(title,owner_id) VALUES ($1,$2) RETURNING id
     ) INSERT INTO memberships(conversation_id,user_id,role)
