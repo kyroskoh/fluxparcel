@@ -31,6 +31,7 @@ type Server struct {
 	SendVerification func(context.Context, string, string) error
 	dummyHash        []byte
 	passwordWork     chan struct{}
+	partSlots        chan struct{}
 }
 
 type requestIDKey struct{}
@@ -45,6 +46,8 @@ func (s *Server) scaledLimit(maximum int64) int64 {
 func (s *Server) Handler() http.Handler {
 	s.liveSlots = make(chan struct{}, 256)
 	s.passwordWork = make(chan struct{}, 4)
+	// Each part upload buffers at most one 8 MiB part, so this bounds part memory to 64 MiB.
+	s.partSlots = make(chan struct{}, 8)
 	s.dummyHash = hashPassword("dummy-password-for-missing-users")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -52,7 +55,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
-		respond(w, 200, map[string]bool{"messaging": true, "transfers": false, "invitations": true, "webPush": false})
+		respond(w, 200, map[string]bool{"messaging": true, "transfers": true, "invitations": true, "webPush": false})
 	})
 	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 24, s.boundPasswordWork(s.register)))
 	mux.HandleFunc("POST /v1/auth/login", s.limit("login", 20, s.boundPasswordWork(s.login)))
@@ -66,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/account/devices", s.devices)
 	mux.HandleFunc("DELETE /v1/account/devices/{id}", s.revokeDevice)
 	s.chatRoutes(mux)
+	s.transferRoutes(mux)
 	mux.HandleFunc("GET "+livePath, s.limit("live-open", 120, s.liveMessages))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 404, "not_found", "Endpoint unavailable.")

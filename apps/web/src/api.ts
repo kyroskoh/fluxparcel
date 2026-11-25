@@ -15,7 +15,7 @@ export type Device = {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public retryAfter = 0) {
+  constructor(public status: number, message: string, public retryAfter = 0, public code = '') {
     super(message)
   }
 }
@@ -50,7 +50,7 @@ export async function api<T>(path: string, method = 'GET', data?: unknown, retry
   if (!response.ok) {
     const error = await response.json().catch(() => null)
     const retryAfter = Number(response.headers.get('Retry-After')) * 1000
-    throw new ApiError(response.status, error?.message ?? 'The request could not be completed.', Number.isFinite(retryAfter) ? retryAfter : 0)
+    throw new ApiError(response.status, error?.message ?? 'The request could not be completed.', Number.isFinite(retryAfter) ? retryAfter : 0, error?.code ?? '')
   }
   if (response.status === 204) return undefined as T
   return response.json()

@@ -159,3 +159,14 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .message-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .message-actions button { padding: .25rem .65rem; font-size: .85rem; }
 .message-edit { width: 100%; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.attach-button { position: relative; display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; }
+.attach-button:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+.attachment, .upload-item { display: grid; gap: .4rem; min-width: 0; }
+.attachment { grid-template-columns: auto 1fr auto; align-items: center; padding: .55rem; border: 1px solid var(--line); border-radius: 10px; }
+.attachment-details { display: grid; min-width: 0; }
+.attachment-details small, .upload-status { color: var(--muted); font-size: .8rem; }
+.upload-heading { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+.upload-name { min-width: 0; overflow-wrap: anywhere; }
+.upload-item progress { width: 100%; height: .6rem; accent-color: var(--accent); }
+.transfer-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .75rem; }

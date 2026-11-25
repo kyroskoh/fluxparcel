@@ -117,8 +117,8 @@ func (s *Server) editMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var result message
-	err := scanMessage(locked.tx.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages page
-        LEFT JOIN users u ON u.id=page.sender_id WHERE page.conversation_id=$1 AND page.sequence=$2`,
+	err := scanMessage(locked.tx.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages page`+messageJoins+`
+        WHERE page.conversation_id=$1 AND page.sequence=$2`,
 		locked.conversationID, locked.sequence), &result)
 	if err == nil {
 		err = locked.tx.Commit(ctx)

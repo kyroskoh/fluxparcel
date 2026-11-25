@@ -1,16 +1,19 @@
 import type { Outbox } from './use-outbox'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Inbox, MessageCircle } from 'lucide-react'
+import { ArrowLeft, Inbox, MessageCircle, Paperclip } from 'lucide-react'
 import QRCode from 'qrcode'
 import { InviteScanner } from './invite-scanner'
 import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
+import { formatBytes, type Transfers } from './transfers'
+import { UploadItem } from './uploads'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
 type Message = {
   sequence: number; version: number; clientId: string; senderId: string; sender: string; body: string
   createdAt: string; editedAt?: string; deletedAt?: string
+  file?: { id: string; name: string; mime: string; size: number; sha256: string; scanStatus: string; expiresAt: string }
 }
 
 const editWindow = 24 * 60 * 60 * 1000
@@ -18,7 +21,7 @@ type Receipts = { sharing: boolean; readers: { userId: string; displayName: stri
 type Member = { userId: string; displayName: string; role: Conversation['role'] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
-export function Chats({ account, outbox }: { account: Account; outbox: Outbox }) {
+export function Chats({ account, outbox, transfers }: { account: Account; outbox: Outbox; transfers: Transfers }) {
   const { id } = useParams()
   const [groups, setGroups] = useState<Conversation[] | null>(null)
   const [listRevision, setListRevision] = useState(0)
@@ -109,7 +112,7 @@ export function Chats({ account, outbox }: { account: Account; outbox: Outbox })
     </aside>
     <section className={'conversation ' + (group ? 'open-conversation' : '')} aria-label="Conversation">
       {id && <Link className="mobile-back" to="/chats"><ArrowLeft size={18} aria-hidden /> Back to chats</Link>}
-      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} onRead={onRead} /> : <div className="empty-conversation">
+      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} transfers={transfers} onRead={onRead} /> : <div className="empty-conversation">
         <div className="conversation-icon"><MessageCircle size={43} strokeWidth={1.5} aria-hidden /></div>
         <h2>{id ? (groups === null && !error ? 'Loading conversation…' : 'Conversation unavailable') : 'No conversation selected'}</h2>
         {id && <Link to="/chats" className="secondary">Open chats</Link>}
@@ -124,7 +127,9 @@ function markerInView(marker: HTMLElement, list: HTMLElement) {
   return bounds.height > 0 && viewport.height > 0 && bounds.top >= Math.max(0, viewport.top) && bounds.bottom <= Math.min(window.innerHeight, viewport.bottom)
 }
 
-function TextChat({ group, account, outbox, onRead }: { group: Conversation; account: Account; outbox: Outbox; onRead: () => void }) {
+function TextChat({ group, account, outbox, transfers, onRead }: {
+  group: Conversation; account: Account; outbox: Outbox; transfers: Transfers; onRead: () => void
+}) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -390,6 +395,9 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
 
   const pending = outbox.messages.filter(item => item.conversationId === group.id
     && !messages.some(message => message.senderId === account.id && message.clientId === item.clientId))
+  // Upload placeholders are visible to the sender only, until the published message arrives through sync.
+  const uploads = transfers.jobs.filter(job => job.conversationId === group.id && job.state !== 'cancelled'
+    && !messages.some(message => message.senderId === account.id && message.clientId === job.id))
 
   return <>
     <header className="group-heading"><h2>{group.title}</h2>
@@ -405,7 +413,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
     <ol ref={list} className="message-list" aria-label="Messages" aria-live="polite">
       {messages.map(message => {
         const own = message.senderId === account.id
-        const canEdit = own && !message.deletedAt && now - Date.parse(message.createdAt) < editWindow
+        const canEdit = own && !message.deletedAt && !message.file && now - Date.parse(message.createdAt) < editWindow
         const canDelete = !message.deletedAt && (own || (group.kind === 'group' && group.role !== 'member'))
         return <li className={own ? 'own-message' : ''} key={message.sequence}>
           <strong>{message.sender}</strong>
@@ -419,7 +427,17 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
                 <button className="primary" disabled={messageBusy || !editDraft.trim()}>Save</button>
                 <button className="secondary" type="button" onClick={() => setEditing(null)}>Cancel</button>
               </div>
-            </form> : <p>{message.body}</p>}
+            </form> : <>
+              {message.body && <p>{message.body}</p>}
+              {message.file && <div className="attachment">
+                <Paperclip size={18} aria-hidden />
+                <div className="attachment-details">
+                  <strong className="upload-name">{message.file.name}</strong>
+                  <small>{formatBytes(message.file.size)} · Not scanned for malware</small>
+                </div>
+                <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>
+              </div>}
+            </>}
           <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
           {message.editedAt && !message.deletedAt && <small className="edited-label">Edited</small>}
           {own && receiptLabel(message.sequence) && <small className="receipt">{receiptLabel(message.sequence)}</small>}
@@ -451,6 +469,7 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
           }}>Discard</button>
         </div>}
       </li>)}
+      {uploads.map(job => <li className="own-message" key={job.id}><UploadItem job={job} transfers={transfers} /></li>)}
     </ol>
     {messageError && <p role="alert" className="error">{messageError}</p>}
     {sendError && <p role="alert" className="error">{sendError}</p>}
@@ -458,6 +477,13 @@ function TextChat({ group, account, outbox, onRead }: { group: Conversation; acc
       <label>Message<input value={draft} maxLength={800} onChange={event => setDraft(event.target.value)} /></label>
       <div className="chat-actions">
         <button className="primary" disabled={sending || !draft.trim()}>{sending ? 'Saving…' : 'Send'}</button>
+        <label className="secondary attach-button">
+          <Paperclip size={17} aria-hidden /> Attach files
+          <input type="file" multiple className="visually-hidden" onChange={event => {
+            if (event.target.files?.length) transfers.add(group.id, Array.from(event.target.files))
+            event.target.value = ''
+          }} />
+        </label>
       </div>
     </form>}
   </>
