@@ -12,6 +12,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      COMPOSE_FILE: compose.yaml:compose.test.yaml
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -41,8 +43,18 @@ jobs:
           done
           # The suite creates and deletes more disposable accounts per minute than the production limits allow.
           echo "RATE_LIMIT_SCALE=5" >> .env
+          # Run cleanup often so end-to-end tests can observe it.
+          echo "CLEANUP_INTERVAL=2s" >> .env
       - run: docker compose up --build --wait
       - run: docker compose run --rm --no-deps migrate
+      - name: Run storage integration tests
+        working-directory: apps/api
+        run: |
+          set -a; . ../../.env; set +a
+          export FLUXPARCEL_TEST_DATABASE_URL="postgres://fluxparcel:${POSTGRES_PASSWORD}@127.0.0.1:55432/fluxparcel?sslmode=disable"
+          export FLUXPARCEL_TEST_S3_ENDPOINT=127.0.0.1:59000 FLUXPARCEL_TEST_S3_BUCKET=fluxparcel
+          export FLUXPARCEL_TEST_S3_ACCESS_KEY="$S3_ACCESS_KEY" FLUXPARCEL_TEST_S3_SECRET_KEY="$S3_SECRET_KEY"
+          go test -count=1 -run TestJanitorAgainstStorage -v ./internal/foundation
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - name: Compose diagnostics

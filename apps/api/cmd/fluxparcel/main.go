@@ -56,21 +56,7 @@ func run(ctx context.Context) error {
 		}
 		return nil
 	case "worker":
-		for {
-			if _, err := db.Exec(ctx, `DELETE FROM device_sessions WHERE id IN (
-                SELECT id FROM device_sessions WHERE expires_at<=now() ORDER BY expires_at LIMIT 500)`); err != nil && ctx.Err() == nil {
-				slog.Warn("session cleanup failed")
-			}
-			if _, err := db.Exec(ctx, `DELETE FROM email_verifications WHERE token_hash IN (
-                SELECT token_hash FROM email_verifications WHERE expires_at<=now() ORDER BY expires_at LIMIT 500)`); err != nil && ctx.Err() == nil {
-				slog.Warn("verification cleanup failed")
-			}
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(time.Minute):
-			}
-		}
+		return work(ctx, db)
 	case "api":
 		return serve(ctx, db)
 	default:
@@ -110,10 +96,18 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 			return fmt.Errorf("RATE_LIMIT_SCALE must be between 1 and 20")
 		}
 	}
+	maxFileSize := int64(foundation.DefaultMaxFileSize)
+	if value := os.Getenv("MAX_FILE_SIZE"); value != "" {
+		maxFileSize, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || maxFileSize < 1<<20 || maxFileSize > 64<<30 {
+			return fmt.Errorf("MAX_FILE_SIZE must be between 1 MiB and 64 GiB in bytes")
+		}
+	}
 	app := &foundation.Server{
 		DB: db, Cache: cache, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), Origin: origin,
 		SecureCookies: public.Scheme == "https", TrustProxy: os.Getenv("TRUST_PROXY") == "true",
 		RateLimitScale: rateLimitScale,
+		MaxFileSize:    maxFileSize,
 		SendVerification: func(ctx context.Context, to, token string) error {
 			dialer := net.Dialer{Timeout: 3 * time.Second}
 			conn, err := dialer.DialContext(ctx, "tcp", smtpAddress)
@@ -212,4 +206,51 @@ func initStorage(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("private bucket initialization failed")
+}
+
+// work runs periodic cleanup. File cleanup needs storage; reconciliation of unreferenced objects runs every
+// sixty passes and only touches objects older than a day.
+func work(ctx context.Context, db *pgxpool.Pool) error {
+	interval := time.Minute
+	if value := os.Getenv("CLEANUP_INTERVAL"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < time.Second || parsed > time.Hour {
+			return fmt.Errorf("CLEANUP_INTERVAL must be between 1s and 1h")
+		}
+		interval = parsed
+	}
+	objects, err := storageClient(os.Getenv("APP_ENV") == "development")
+	if err != nil {
+		return err
+	}
+	janitor := &foundation.Janitor{DB: db, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), OrphanAge: 24 * time.Hour}
+	for pass := 0; ; pass++ {
+		if _, err := db.Exec(ctx, `DELETE FROM device_sessions WHERE id IN (
+            SELECT id FROM device_sessions WHERE expires_at<=now() ORDER BY expires_at LIMIT 500)`); err != nil && ctx.Err() == nil {
+			slog.Warn("session cleanup failed")
+		}
+		if _, err := db.Exec(ctx, `DELETE FROM email_verifications WHERE token_hash IN (
+            SELECT token_hash FROM email_verifications WHERE expires_at<=now() ORDER BY expires_at LIMIT 500)`); err != nil && ctx.Err() == nil {
+			slog.Warn("verification cleanup failed")
+		}
+		step, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		if report, err := janitor.Sweep(step); err != nil && ctx.Err() == nil {
+			slog.Warn("file cleanup failed")
+		} else if report.Transfers+report.Files > 0 {
+			slog.Info("file cleanup", "transfers", report.Transfers, "files", report.Files)
+		}
+		if pass%60 == 0 {
+			if report, err := janitor.Reconcile(step); err != nil && ctx.Err() == nil {
+				slog.Warn("storage reconciliation failed")
+			} else if report.Orphans+report.Uploads > 0 {
+				slog.Info("storage reconciliation", "objects", report.Orphans, "uploads", report.Uploads)
+			}
+		}
+		cancel()
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(interval):
+		}
+	}
 }

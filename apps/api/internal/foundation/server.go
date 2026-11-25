@@ -19,7 +19,9 @@ import (
 
 type Server struct {
 	// RateLimitScale multiplies every per-address limit. Values below 1 keep the defaults.
-	RateLimitScale   int64
+	RateLimitScale int64
+	// MaxFileSize overrides DefaultMaxFileSize when positive.
+	MaxFileSize      int64
 	liveSlots        chan struct{}
 	DB               *pgxpool.Pool
 	Cache            *redis.Client
@@ -35,6 +37,16 @@ type Server struct {
 }
 
 type requestIDKey struct{}
+
+// DefaultMaxFileSize is the largest attachment accepted unless the deployment configures another limit.
+const DefaultMaxFileSize = 8 << 30
+
+func (s *Server) maxFileSize() int64 {
+	if s.MaxFileSize > 0 {
+		return s.MaxFileSize
+	}
+	return DefaultMaxFileSize
+}
 
 func (s *Server) scaledLimit(maximum int64) int64 {
 	if s.RateLimitScale > 1 {
@@ -55,7 +67,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
-		respond(w, 200, map[string]bool{"messaging": true, "transfers": true, "invitations": true, "webPush": false})
+		respond(w, 200, map[string]any{"messaging": true, "transfers": true, "invitations": true, "webPush": false,
+			"maxFileSize": s.maxFileSize(), "partSize": transferPartSize})
 	})
 	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 24, s.boundPasswordWork(s.register)))
 	mux.HandleFunc("POST /v1/auth/login", s.limit("login", 20, s.boundPasswordWork(s.login)))
