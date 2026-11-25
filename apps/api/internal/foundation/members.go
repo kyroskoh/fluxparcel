@@ -18,6 +18,7 @@ func (s *Server) memberRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/conversations/{id}/members", s.listMembers)
 	mux.HandleFunc("PATCH /v1/conversations/{id}/members/{userId}", s.limit("member-admin", 60, s.changeMemberRole))
 	mux.HandleFunc("DELETE /v1/conversations/{id}/members/{userId}", s.limit("member-admin", 60, s.removeMember))
+	mux.HandleFunc("POST /v1/conversations/{id}/members/{userId}/ownership", s.limit("member-admin", 60, s.transferOwnership))
 }
 
 func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +180,45 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 	// Open sockets recheck membership on this notice, so the removed account's live view closes.
 	s.notifyMessage(ctx, change.conversationID)
 	w.WriteHeader(204)
+}
+
+// transferOwnership hands the group to another member. The previous owner stays on as an admin,
+// keeps the invitations they issued, and can then leave. Deleting the new owner's account deletes the group.
+func (s *Server) transferOwnership(w http.ResponseWriter, r *http.Request) {
+	change, _, ok := s.lockMembers(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	defer change.tx.Rollback(ctx)
+	if change.actorRole != "owner" {
+		problem(w, r, 403, "owner_required", "Only the group owner can transfer ownership.")
+		return
+	}
+	if change.targetID == change.actorID {
+		problem(w, r, 409, "already_owner", "You already own this group.")
+		return
+	}
+	_, err := change.tx.Exec(ctx, `UPDATE memberships SET role=CASE WHEN user_id=$2 THEN 'owner' ELSE 'admin' END
+        WHERE conversation_id=$1 AND user_id IN ($2,$3)`, change.conversationID, change.targetID, change.actorID)
+	if err == nil {
+		_, err = change.tx.Exec(ctx, `UPDATE conversations SET owner_id=$2 WHERE id=$1`, change.conversationID, change.targetID)
+	}
+	var result member
+	if err == nil {
+		err = change.tx.QueryRow(ctx, `SELECT m.user_id::text,u.display_name,m.role FROM memberships m
+            JOIN users u ON u.id=m.user_id WHERE m.conversation_id=$1 AND m.user_id=$2`,
+			change.conversationID, change.targetID).Scan(&result.UserID, &result.DisplayName, &result.Role)
+	}
+	if err == nil {
+		err = change.tx.Commit(ctx)
+	}
+	if err != nil {
+		failure(w, r)
+		return
+	}
+	s.notifyMessage(ctx, change.conversationID)
+	respond(w, 200, result)
 }
 
 var errRemovedFromGroup = errors.New("removed from group")

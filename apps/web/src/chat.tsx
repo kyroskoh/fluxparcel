@@ -517,6 +517,14 @@ function MemberManager({ group, account, refresh, onChanged }: { group: Conversa
           void change(item, () => api(endpoint + '/' + item.userId, 'PATCH', { role }),
             item.displayName + (role === 'admin' ? ' is now an admin.' : ' is now a member.'))
         }}>{item.role === 'admin' ? 'Make member' : 'Make admin'}</button>}
+        {group.role === 'owner' && item.role !== 'owner' && (confirming === 'owner:' + item.userId ? <>
+          <button className="primary" type="button" disabled={busy} onClick={() => {
+            // Refresh the conversation list so this account's controls follow its new admin role.
+            void change(item, () => api(endpoint + '/' + item.userId + '/ownership', 'POST').then(onChanged),
+              item.displayName + ' now owns this group. You are an admin.')
+          }}>Confirm transfer to {item.displayName}</button>
+          <button className="secondary" type="button" onClick={() => setConfirming('')}>Cancel</button>
+        </> : <button className="secondary" type="button" disabled={busy} onClick={() => setConfirming('owner:' + item.userId)}>Make owner</button>)}
         {canRemove(item) && (confirming === item.userId ? <>
           <button className="primary" type="button" disabled={busy} onClick={() => {
             void change(item, () => api(endpoint + '/' + item.userId, 'DELETE'), item.displayName + ' was removed.')
@@ -531,7 +539,7 @@ function MemberManager({ group, account, refresh, onChanged }: { group: Conversa
       }}>Confirm leaving {group.title}</button>
       <button className="secondary" type="button" onClick={() => setConfirming('')}>Cancel</button>
     </div> : <button className="secondary" type="button" disabled={busy} onClick={() => setConfirming(account.id)}>Leave group</button>)}
-    {self?.role === 'owner' && <p className="muted">As the owner, you cannot leave this group.</p>}
+    {self?.role === 'owner' && <p className="muted">Transfer ownership to another member before leaving this group.</p>}
   </div>
 }
 
