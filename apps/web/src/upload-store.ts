@@ -13,6 +13,8 @@ export type UploadRecord = {
   lastModified: number
   sha256?: string
   transferId?: string
+  // The sender's chosen file lifetime in seconds; the server default applies when absent.
+  expiresInSeconds?: number
   paused: boolean
   error?: string
   createdAt: number

@@ -8,6 +8,7 @@ import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
 import { formatBytes, type Transfers } from './transfers'
 import { UploadItem } from './uploads'
+import { formatDuration, useCapabilities } from './capabilities'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
 type Message = {
@@ -17,6 +18,8 @@ type Message = {
 }
 
 const editWindow = 24 * 60 * 60 * 1000
+// Sender-selectable file lifetimes, in seconds; the deployment's retention is the default and the longest.
+const lifetimes = [3600, 86400, 7 * 86400]
 type Receipts = { sharing: boolean; readers: { userId: string; displayName: string; sequence: number }[] }
 type Member = { userId: string; displayName: string; role: Conversation['role'] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
@@ -140,6 +143,10 @@ function TextChat({ group, account, outbox, transfers, onRead }: {
   const [messageBusy, setMessageBusy] = useState(false)
   const [messageError, setMessageError] = useState('')
   const [now, setNow] = useState(() => Date.now())
+  const capabilities = useCapabilities()
+  const [lifetime, setLifetime] = useState(0)
+  // The server ends availability at expiry; the client also hides the link once the expiry time passes.
+  const fileAvailable = (file: NonNullable<Message['file']>) => file.available && Date.parse(file.expiresAt) > now
   const [syncError, setSyncError] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const [showInvites, setShowInvites] = useState(false)
@@ -433,9 +440,11 @@ function TextChat({ group, account, outbox, transfers, onRead }: {
                 <Paperclip size={18} aria-hidden />
                 <div className="attachment-details">
                   <strong className="upload-name">{message.file.name}</strong>
-                  <small>{formatBytes(message.file.size)} · {message.file.available ? 'Not scanned for malware' : 'File no longer available'}</small>
+                  <small>{formatBytes(message.file.size)} · {fileAvailable(message.file)
+                    ? 'Expires ' + new Date(message.file.expiresAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + ' · Not scanned for malware'
+                    : 'File expired'}</small>
                 </div>
-                {message.file.available && <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>}
+                {fileAvailable(message.file) && <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>}
               </div>}
             </>}
           <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
@@ -480,11 +489,21 @@ function TextChat({ group, account, outbox, transfers, onRead }: {
         <label className="secondary attach-button">
           <Paperclip size={17} aria-hidden /> Attach files
           <input type="file" multiple className="visually-hidden" onChange={event => {
-            if (event.target.files?.length) transfers.add(group.id, Array.from(event.target.files))
+            if (event.target.files?.length) transfers.add(group.id, Array.from(event.target.files), lifetime || undefined)
             event.target.value = ''
           }} />
         </label>
+        <label className="expiry-select">File expiry
+          <select value={lifetime} onChange={event => setLifetime(Number(event.target.value))}>
+            <option value={0}>{capabilities ? 'Default (' + formatDuration(capabilities.fileRetention) + ')' : 'Default'}</option>
+            {lifetimes.filter(seconds => !capabilities || seconds < capabilities.fileRetention).map(seconds =>
+              <option key={seconds} value={seconds}>{formatDuration(seconds)}</option>)}
+          </select>
+        </label>
       </div>
+      <p className="muted expiry-note">Files disappear for everyone in this chat when they expire.
+        {capabilities && capabilities.snapshotRetention > 0 &&
+          ' Server administrators can restore an expired file for ' + formatDuration(capabilities.snapshotRetention) + ' after it expires.'}</p>
     </form>}
   </>
 }

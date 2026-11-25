@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,7 +22,13 @@ type Server struct {
 	// RateLimitScale multiplies every per-address limit. Values below 1 keep the defaults.
 	RateLimitScale int64
 	// MaxFileSize overrides DefaultMaxFileSize when positive.
-	MaxFileSize      int64
+	MaxFileSize int64
+	// FileRetention is the default and longest file lifetime; zero means DefaultFileRetention.
+	FileRetention time.Duration
+	// SnapshotRetention keeps expired files for administrator restoration; zero disables snapshots.
+	SnapshotRetention time.Duration
+	// AdminEmails lists, in lower case, the verified accounts allowed to administer storage.
+	AdminEmails      []string
 	liveSlots        chan struct{}
 	DB               *pgxpool.Pool
 	Cache            *redis.Client
@@ -48,6 +55,31 @@ func (s *Server) maxFileSize() int64 {
 	return DefaultMaxFileSize
 }
 
+// DefaultFileRetention keeps files for 30 days unless the sender or deployment chooses less.
+const DefaultFileRetention = 30 * 24 * time.Hour
+
+// minFileLifetime is the shortest expiry a sender may choose.
+const minFileLifetime = time.Minute
+
+func (s *Server) fileRetention() time.Duration {
+	if s.FileRetention > 0 {
+		return s.FileRetention
+	}
+	return DefaultFileRetention
+}
+
+func (s *Server) isAdmin(user account) bool {
+	if !user.Verified {
+		return false
+	}
+	for _, email := range s.AdminEmails {
+		if strings.EqualFold(email, user.Email) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) scaledLimit(maximum int64) int64 {
 	if s.RateLimitScale > 1 {
 		return maximum * s.RateLimitScale
@@ -68,7 +100,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, 200, map[string]any{"messaging": true, "transfers": true, "invitations": true, "webPush": false,
-			"maxFileSize": s.maxFileSize(), "partSize": transferPartSize})
+			"maxFileSize": s.maxFileSize(), "partSize": transferPartSize, "minFileLifetime": int64(minFileLifetime.Seconds()),
+			"fileRetention": int64(s.fileRetention().Seconds()), "snapshotRetention": int64(s.SnapshotRetention.Seconds())})
 	})
 	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 24, s.boundPasswordWork(s.register)))
 	mux.HandleFunc("POST /v1/auth/login", s.limit("login", 20, s.boundPasswordWork(s.login)))
@@ -83,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/account/devices/{id}", s.revokeDevice)
 	s.chatRoutes(mux)
 	s.transferRoutes(mux)
+	s.adminRoutes(mux)
 	mux.HandleFunc("GET "+livePath, s.limit("live-open", 120, s.liveMessages))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 404, "not_found", "Endpoint unavailable.")

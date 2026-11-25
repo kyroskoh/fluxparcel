@@ -31,6 +31,8 @@ type account struct {
 	Verified    bool   `json:"verified"`
 	// ShareReadReceipts lets other members see this account's read cursor. It is off by default.
 	ShareReadReceipts bool `json:"shareReadReceipts"`
+	// Admin is true for verified accounts listed in ADMIN_EMAILS.
+	Admin bool `json:"admin"`
 }
 
 func hashPassword(password string) []byte {
@@ -130,6 +132,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setCookies(w, access, refresh)
+	user.Admin = s.isAdmin(user)
 	respond(w, 200, user)
 }
 
@@ -187,6 +190,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (account, 
         FROM device_sessions d JOIN users u ON u.id=d.user_id
         WHERE d.access_hash=$1 AND d.access_expires_at>now() AND d.expires_at>now()`,
 		digest(cookieValue(r, "rv_access"))).Scan(&user.ID, &user.Email, &user.Username, &user.DisplayName, &user.Verified, &user.ShareReadReceipts, &device)
+	user.Admin = s.isAdmin(user)
 	return user, device, authResult(w, r, err)
 }
 

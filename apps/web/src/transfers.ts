@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api, ApiError } from './api'
+import { loadCapabilities } from './capabilities'
 import { loadUploads, removeUpload, saveUpload, uploadChannel, type UploadRecord } from './upload-store'
 
 export type UploadState = 'preparing' | 'queued' | 'uploading' | 'paused' | 'waiting' | 'retrying' | 'verifying'
@@ -100,7 +101,7 @@ export class TransferManager {
       this.channel = new BroadcastChannel(uploadChannel(this.accountId))
       this.channel.onmessage = () => void this.restore()
     }
-    void api<{ maxFileSize?: number }>('/capabilities').then(capabilities => {
+    void loadCapabilities().then(capabilities => {
       if (capabilities.maxFileSize) this.maxFileSize = capabilities.maxFileSize
     }).catch(() => undefined)
     void this.restore().then(() => this.pump())
@@ -118,12 +119,12 @@ export class TransferManager {
     }
   }
 
-  add(conversationId: string, files: Iterable<File>) {
+  add(conversationId: string, files: Iterable<File>, expiresInSeconds?: number) {
     for (const file of files) {
       const id = crypto.randomUUID()
       const record: UploadRecord = {
         accountId: this.accountId, id, conversationId, name: file.name, size: file.size, type: file.type,
-        lastModified: file.lastModified, paused: false, createdAt: Date.now(),
+        lastModified: file.lastModified, expiresInSeconds, paused: false, createdAt: Date.now(),
       }
       const upload: Upload = {
         record, file, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
@@ -372,7 +373,7 @@ export class TransferManager {
       this.update(upload, { state: 'uploading' })
       upload.transfer = await this.withRetry(upload, signal, () => api<TransferView>('/transfers', 'POST', {
         conversationId: record.conversationId, clientId: record.id, name: record.name, size: record.size,
-        mime: record.type, sha256: record.sha256,
+        mime: record.type, sha256: record.sha256, ...(record.expiresInSeconds ? { expiresInSeconds: record.expiresInSeconds } : {}),
       }, true, signal))
       if (record.transferId !== upload.transfer.id) {
         record.transferId = upload.transfer.id
@@ -529,7 +530,7 @@ export function useTransfers(accountId: string) {
   return {
     accountId,
     jobs,
-    add: (conversationId: string, files: Iterable<File>) => manager.add(conversationId, files),
+    add: (conversationId: string, files: Iterable<File>, expiresInSeconds?: number) => manager.add(conversationId, files, expiresInSeconds),
     reselect: (id: string, file: File) => manager.reselect(id, file),
     pause: (id: string) => manager.pause(id),
     resume: (id: string) => manager.resume(id),

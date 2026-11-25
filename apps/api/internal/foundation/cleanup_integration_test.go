@@ -87,6 +87,9 @@ func TestJanitorAgainstStorage(t *testing.T) {
 		_, err := db.Exec(ctx, `INSERT INTO messages(conversation_id,sequence,version,sender_id,client_id,body,body_digest,file_id,deleted_at)
             VALUES ($1,$2,$2,$3,gen_random_uuid(),'',$4,$5,$6)`, conversationID, sequence, userID, digest(""), id, deletedAt)
 		must(t, err)
+		// Keep the conversation's counters in step, as sends do.
+		_, err = db.Exec(ctx, `UPDATE conversations SET next_sequence=$2+1,message_version=$2 WHERE id=$1`, conversationID, sequence)
+		must(t, err)
 		return id
 	}
 
@@ -100,12 +103,18 @@ func TestJanitorAgainstStorage(t *testing.T) {
 	transfer("completed", "completed", "finished", "1 day", "-8 days")
 	deletedMessage := file("deleted", "30 days", true)
 	expired := file("old", "-1 minute", false)
+	staleSnapshot := file("stale", "30 days", false)
+	_, err = db.Exec(ctx, `UPDATE files SET lifecycle='snapshot',expired_at=now()-interval '31 days',
+        snapshot_expires_at=now()-interval '1 minute' WHERE id=$1`, staleSnapshot)
+	must(t, err)
+	var versionBefore int64
+	must(t, db.QueryRow(ctx, `SELECT version FROM messages WHERE file_id=$1`, expired).Scan(&versionBefore))
 	putObject("orphan")
 	// An upload whose transfer was deleted with its account or conversation.
 	orphanUpload := startUpload("orphan-upload")
 
 	// Age zero is safe here: live objects and uploads are always referenced by a file or transfer record.
-	janitor := &Janitor{DB: db, Objects: objects, Bucket: bucket}
+	janitor := &Janitor{DB: db, Objects: objects, Bucket: bucket, SnapshotRetention: 24 * time.Hour}
 	// The worker may sweep concurrently, so assert outcomes rather than what this pass reports.
 	_, err = janitor.Sweep(ctx)
 	must(t, err)
@@ -120,7 +129,8 @@ func TestJanitorAgainstStorage(t *testing.T) {
 		_, err := core.ListObjectParts(ctx, bucket, key(name), upload, 0, 10)
 		return err == nil
 	}
-	if !exists("kept") || exists("deleted") || exists("old") || exists("orphan") {
+	// Expired files keep their bytes as snapshots; purged snapshots and deleted messages lose them.
+	if !exists("kept") || !exists("old") || exists("stale") || exists("deleted") || exists("orphan") {
 		t.Fatal("cleanup kept the wrong objects")
 	}
 	if uploadOpen("cancelled", cancelledUpload) || uploadOpen("expired", expiredUpload) || uploadOpen("orphan-upload", orphanUpload) {
@@ -134,15 +144,27 @@ func TestJanitorAgainstStorage(t *testing.T) {
 	if transfers != 1 {
 		t.Fatalf("expected only the active transfer to remain, found %d", transfers)
 	}
-	var removed []bool
-	for _, id := range []string{kept, deletedMessage, expired} {
-		var isRemoved bool
-		must(t, db.QueryRow(ctx, `SELECT removed_at IS NOT NULL FROM files WHERE id=$1`, id).Scan(&isRemoved))
-		removed = append(removed, isRemoved)
+	lifecycles := map[string]string{}
+	for name, id := range map[string]string{"kept": kept, "deleted": deletedMessage, "old": expired, "stale": staleSnapshot} {
+		var lifecycle string
+		must(t, db.QueryRow(ctx, `SELECT lifecycle FROM files WHERE id=$1`, id).Scan(&lifecycle))
+		lifecycles[name] = lifecycle
 	}
-	if removed[0] || !removed[1] || !removed[2] {
-		t.Fatalf("unexpected removal flags: %v", removed)
+	want := map[string]string{"kept": "active", "deleted": "purged", "old": "snapshot", "stale": "purged"}
+	for name, lifecycle := range want {
+		if lifecycles[name] != lifecycle {
+			t.Fatalf("%s: lifecycle %q, want %q", name, lifecycles[name], lifecycle)
+		}
 	}
+	var versionAfter int64
+	var snapshotExpires time.Time
+	must(t, db.QueryRow(ctx, `SELECT m.version,f.snapshot_expires_at FROM messages m JOIN files f ON f.id=m.file_id
+        WHERE f.id=$1`, expired).Scan(&versionAfter, &snapshotExpires))
+	if versionAfter <= versionBefore || time.Until(snapshotExpires) < 23*time.Hour {
+		t.Fatalf("expiry did not touch the message or set snapshot retention: version %d->%d, until %v",
+			versionBefore, versionAfter, time.Until(snapshotExpires))
+	}
+
 	var ledger int
 	must(t, db.QueryRow(ctx, `SELECT count(*) FROM multipart_uploads WHERE upload_id = ANY($1)`,
 		[]string{cancelledUpload, expiredUpload, orphanUpload, activeUpload}).Scan(&ledger))
@@ -152,6 +174,7 @@ func TestJanitorAgainstStorage(t *testing.T) {
 	_, _ = db.Exec(context.Background(), `DELETE FROM multipart_uploads WHERE upload_id=$1`, activeUpload)
 	_ = core.AbortMultipartUpload(context.Background(), bucket, key("active"), activeUpload)
 	_ = objects.RemoveObject(context.Background(), bucket, key("kept"), minio.RemoveObjectOptions{})
+	_ = objects.RemoveObject(context.Background(), bucket, key("old"), minio.RemoveObjectOptions{})
 }
 
 func must(t *testing.T, err error) {

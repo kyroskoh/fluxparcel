@@ -5,6 +5,7 @@ export type Account = {
   displayName: string
   verified: boolean
   shareReadReceipts: boolean
+  admin: boolean
 }
 
 export type Device = {

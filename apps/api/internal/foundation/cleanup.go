@@ -19,22 +19,29 @@ type Janitor struct {
 	Bucket  string
 	// OrphanAge protects objects and uploads that are still being written or published.
 	OrphanAge time.Duration
+	// SnapshotRetention keeps expired files for administrator restoration; zero purges them at expiry.
+	SnapshotRetention time.Duration
+	// Notify, when set, tells open chats in a conversation to synchronize.
+	Notify func(ctx context.Context, conversationID string)
 }
 
 // CleanupReport counts what one pass removed.
 type CleanupReport struct {
-	Transfers, Files, Orphans, Uploads int
+	Transfers, Expired, Purged, Orphans, Uploads int
 }
 
-// Sweep closes finished or abandoned transfers and removes expired or deleted files.
+// Sweep advances the storage lifecycle: it closes finished or abandoned transfers, expires files past their
+// expiry, and purges snapshots past their retention and files whose message was deleted.
 func (j *Janitor) Sweep(ctx context.Context) (CleanupReport, error) {
 	var report CleanupReport
-	transfers, err := j.closeTransfers(ctx)
-	report.Transfers = transfers
-	if err != nil {
+	var err error
+	if report.Transfers, err = j.closeTransfers(ctx); err != nil {
 		return report, err
 	}
-	report.Files, err = j.removeFiles(ctx)
+	if report.Expired, err = j.expireFiles(ctx); err != nil {
+		return report, err
+	}
+	report.Purged, err = j.purgeFiles(ctx)
 	return report, err
 }
 
@@ -90,11 +97,72 @@ func (j *Janitor) closeTransfers(ctx context.Context) (int, error) {
 	return closed, nil
 }
 
-// removeFiles deletes the bytes of expired files and of files whose message was deleted, then marks them removed.
-func (j *Janitor) removeFiles(ctx context.Context) (int, error) {
-	rows, err := j.DB.Query(ctx, `SELECT f.id,f.object_key FROM files f WHERE f.removed_at IS NULL AND (f.expires_at<=now()
-        OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.file_id=f.id AND m.deleted_at IS NULL))
-        ORDER BY f.expires_at LIMIT 100`)
+// expireFiles ends the availability of files past their expiry for every member. With snapshot retention, the
+// bytes stay as an administrator-only snapshot; otherwise the snapshot expires at once and the same pass purges it.
+// Touching the file's messages lets open chats and other devices learn about the expiry through synchronization.
+func (j *Janitor) expireFiles(ctx context.Context) (int, error) {
+	rows, err := j.DB.Query(ctx, `SELECT id,conversation_id FROM files
+        WHERE lifecycle='active' AND expires_at<=now() ORDER BY expires_at LIMIT 100`)
+	if err != nil {
+		return 0, err
+	}
+	type pending struct{ id, conversation string }
+	var batch []pending
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.id, &item.conversation); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		batch = append(batch, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	expired := 0
+	for _, item := range batch {
+		changed, err := j.expireFile(ctx, item.id, item.conversation)
+		if err != nil {
+			return expired, err
+		}
+		if changed {
+			expired++
+			if j.Notify != nil {
+				j.Notify(ctx, item.conversation)
+			}
+		}
+	}
+	return expired, nil
+}
+
+func (j *Janitor) expireFile(ctx context.Context, fileID, conversationID string) (bool, error) {
+	tx, err := j.DB.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE files SET lifecycle='snapshot',expired_at=now(),
+            snapshot_expires_at=now()+make_interval(secs => $2)
+        WHERE id=$1 AND lifecycle='active' AND expires_at<=now()`, fileID, j.SnapshotRetention.Seconds())
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, err
+	}
+	if err := touchFileMessages(ctx, tx, conversationID, fileID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+// purgeFiles deletes the bytes of snapshots past their retention and of files whose message was deleted. Each row is
+// claimed before its bytes are removed, so a concurrent restore cannot revive a file whose bytes are gone.
+func (j *Janitor) purgeFiles(ctx context.Context) (int, error) {
+	rows, err := j.DB.Query(ctx, `UPDATE files f SET lifecycle='purged' WHERE f.id IN (
+            SELECT id FROM files WHERE (lifecycle='snapshot' AND snapshot_expires_at<=now())
+               OR (lifecycle IN ('active','snapshot')
+                   AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.file_id=files.id AND m.deleted_at IS NULL))
+            ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED)
+        RETURNING f.id,f.object_key`)
 	if err != nil {
 		return 0, err
 	}
@@ -112,18 +180,16 @@ func (j *Janitor) removeFiles(ctx context.Context) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	removed := 0
 	for _, item := range batch {
+		// A failed removal leaves an unreferenced object that reconciliation deletes later.
 		if err := j.Objects.RemoveObject(ctx, j.Bucket, item.key, minio.RemoveObjectOptions{}); err != nil {
 			continue
 		}
-		tag, err := j.DB.Exec(ctx, `UPDATE files SET removed_at=now() WHERE id=$1 AND removed_at IS NULL`, item.id)
-		if err != nil {
-			return removed, err
+		if _, err := j.DB.Exec(ctx, `UPDATE files SET removed_at=now() WHERE id=$1`, item.id); err != nil {
+			return len(batch), err
 		}
-		removed += int(tag.RowsAffected())
 	}
-	return removed, nil
+	return len(batch), nil
 }
 
 // Reconcile removes stored objects and incomplete uploads that no record refers to, such as those left behind
@@ -146,7 +212,7 @@ func (j *Janitor) Reconcile(ctx context.Context) (CleanupReport, error) {
 			continue
 		}
 		var referenced bool
-		if err := j.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM files WHERE object_key=$1 AND removed_at IS NULL)
+		if err := j.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM files WHERE object_key=$1 AND lifecycle IN ('active','snapshot'))
             OR EXISTS (SELECT 1 FROM transfers WHERE object_key=$1)`, object.Key).Scan(&referenced); err != nil {
 			return report, err
 		}

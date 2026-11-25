@@ -45,6 +45,8 @@ jobs:
           echo "RATE_LIMIT_SCALE=5" >> .env
           # Run cleanup often so end-to-end tests can observe it.
           echo "CLEANUP_INTERVAL=2s" >> .env
+          # Fixed addresses that end-to-end tests register and verify to act as storage administrators.
+          echo "ADMIN_EMAILS=admin-desktop@example.test,admin-mobile@example.test" >> .env
       - run: docker compose up --build --wait
       - run: docker compose run --rm --no-deps migrate
       - name: Run storage integration tests
