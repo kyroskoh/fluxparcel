@@ -40,6 +40,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 - End-to-end authentication fixtures honor the API's `authentication_busy` load shedding and `Retry-After`.
 - `RATE_LIMIT_SCALE` lets disposable test stacks raise per-address rate limits.
 
+### Fixed
+- A manual pause now survives an immediate page reload: the pause intent is recorded synchronously as well as in
+  IndexedDB, whose write could still be in flight.
+
 ### Security
 - Administration routes answer `404` to non-administrators, and administrator rights need a verified email.
 - Attachments are served as sandboxed `application/octet-stream` downloads and authorized against current membership.

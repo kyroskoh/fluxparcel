@@ -160,6 +160,7 @@ export class TransferManager {
     const upload = this.uploads.get(id)
     if (!upload || terminal.includes(upload.job.state) || ['verifying', 'elsewhere'].includes(upload.job.state)) return
     upload.record.paused = true
+    this.rememberPause(id, true)
     this.persist(upload)
     this.interrupt(upload, 'paused')
     this.pump()
@@ -170,6 +171,7 @@ export class TransferManager {
     if (!upload || !['paused', 'failed', 'waiting'].includes(upload.job.state)) return
     upload.attempts = 0
     upload.record.paused = false
+    this.rememberPause(id, false)
     upload.record.error = undefined
     this.persist(upload)
     this.update(upload, { state: this.ready(upload) ? 'queued' : 'needs-file', error: '' })
@@ -205,7 +207,28 @@ export class TransferManager {
     void saveUpload(upload.record).then(() => this.channel?.postMessage('changed')).catch(() => undefined)
   }
 
+  // Pause intent is also written synchronously to localStorage, because an IndexedDB write can still be in flight
+  // when the page reloads; a manual pause must survive an immediate refresh.
+  private pausedKey() {
+    return 'fluxparcel-paused-uploads:' + this.accountId
+  }
+
+  private pausedIds() {
+    try { return new Set<string>(JSON.parse(localStorage.getItem(this.pausedKey()) ?? '[]')) } catch { return new Set<string>() }
+  }
+
+  private rememberPause(id: string, paused: boolean) {
+    const ids = this.pausedIds()
+    if (paused) ids.add(id)
+    else ids.delete(id)
+    try {
+      if (ids.size) localStorage.setItem(this.pausedKey(), JSON.stringify([...ids]))
+      else localStorage.removeItem(this.pausedKey())
+    } catch { /* IndexedDB still records the intent */ }
+  }
+
   private forget(upload: Upload) {
+    this.rememberPause(upload.record.id, false)
     void removeUpload(this.accountId, upload.record.id).then(() => this.channel?.postMessage('changed')).catch(() => undefined)
   }
 
@@ -220,6 +243,8 @@ export class TransferManager {
       for (const lock of state.held ?? []) if (lock.name) held.add(lock.name)
     }
     const known = new Set(records.map(record => record.id))
+    const paused = this.pausedIds()
+    for (const id of paused) if (!known.has(id)) this.rememberPause(id, false)
     for (const [id, upload] of this.uploads) {
       // Another tab finished, cancelled or dismissed this upload.
       if (!known.has(id) && !upload.controller && !terminal.includes(upload.job.state) && upload.job.state !== 'failed') this.uploads.delete(id)
@@ -235,7 +260,10 @@ export class TransferManager {
       upload.record = record
       this.uploads.set(record.id, upload)
       if (held.has(lockName(record.id))) this.update(upload, { state: 'elsewhere', error: '' })
-      else if (record.paused) this.update(upload, { state: 'paused', error: record.error ?? '' })
+      else if (record.paused || paused.has(record.id)) {
+        record.paused = true
+        this.update(upload, { state: 'paused', error: record.error ?? '' })
+      }
       else if (!upload.file) this.update(upload, { state: 'needs-file', error: record.error ?? '' })
       else if (upload.job.state === 'elsewhere') this.update(upload, { state: 'queued', error: '' })
       if (record.transferId && !upload.file) pending.push(upload)

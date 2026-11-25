@@ -86,8 +86,8 @@ test('a paused upload stays paused across reloads and cancelling it lets cleanup
     await page.getByLabel('Attach files').setInputFiles({ name: 'paused.bin', mimeType: 'application/octet-stream', buffer: randomBytes(2 * partSize + 1) })
     const item = page.getByRole('listitem').filter({ hasText: 'paused.bin', has: page.getByRole('progressbar') })
     await expect.poll(() => watch.acknowledged.size).toBeGreaterThan(0)
+    // Reload immediately after pausing: the pause must survive even if its IndexedDB write has not finished.
     await item.getByRole('button', { name: 'Pause' }).click()
-    await expect(item.getByText(/Paused/)).toBeVisible()
     await page.reload()
     await expect(item.getByText(/Paused/)).toBeVisible()
     const requested = watch.requested.length
