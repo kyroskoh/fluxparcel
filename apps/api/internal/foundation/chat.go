@@ -22,24 +22,48 @@ type conversation struct {
 }
 
 type message struct {
-	Sequence int64      `json:"sequence"`
-	Version  int64      `json:"version"`
-	ClientID string     `json:"clientId"`
-	SenderID string     `json:"senderId"`
-	Sender   string     `json:"sender"`
-	Body     string     `json:"body"`
-	Created  time.Time  `json:"createdAt"`
-	Edited   *time.Time `json:"editedAt,omitempty"`
-	Deleted  *time.Time `json:"deletedAt,omitempty"`
+	Sequence int64       `json:"sequence"`
+	Version  int64       `json:"version"`
+	ClientID string      `json:"clientId"`
+	SenderID string      `json:"senderId"`
+	Sender   string      `json:"sender"`
+	Body     string      `json:"body"`
+	Created  time.Time   `json:"createdAt"`
+	Edited   *time.Time  `json:"editedAt,omitempty"`
+	Deleted  *time.Time  `json:"deletedAt,omitempty"`
+	File     *attachment `json:"file,omitempty"`
+}
+
+// attachment is a published file. It is hidden once its message is deleted.
+type attachment struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Mime       string    `json:"mime"`
+	Size       int64     `json:"size"`
+	SHA256     string    `json:"sha256"`
+	ScanStatus string    `json:"scanStatus"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 // messageColumns reads a message aliased as "page" and its sender aliased as "u".
 const messageColumns = `page.sequence,page.version,page.client_id,COALESCE(page.sender_id::text,''),
-        COALESCE(u.display_name,'Deleted account'),page.body,page.created_at,page.edited_at,page.deleted_at`
+        COALESCE(u.display_name,'Deleted account'),page.body,page.created_at,page.edited_at,page.deleted_at,
+        CASE WHEN page.deleted_at IS NULL THEN f.id::text END,f.name,f.mime,f.size,encode(f.sha256,'hex'),f.scan_status,f.expires_at`
+
+// messageJoins adds each message's sender and attachment to a query that aliases messages as "page".
+const messageJoins = ` LEFT JOIN users u ON u.id=page.sender_id LEFT JOIN files f ON f.id=page.file_id`
 
 func scanMessage(row pgx.Row, item *message) error {
-	return row.Scan(&item.Sequence, &item.Version, &item.ClientID, &item.SenderID, &item.Sender, &item.Body,
-		&item.Created, &item.Edited, &item.Deleted)
+	var fileID, name, mime, checksum, scan *string
+	var size *int64
+	var expires *time.Time
+	err := row.Scan(&item.Sequence, &item.Version, &item.ClientID, &item.SenderID, &item.Sender, &item.Body,
+		&item.Created, &item.Edited, &item.Deleted, &fileID, &name, &mime, &size, &checksum, &scan, &expires)
+	if err == nil && fileID != nil {
+		item.File = &attachment{ID: *fileID, Name: *name, Mime: *mime, Size: *size, SHA256: *checksum,
+			ScanStatus: *scan, ExpiresAt: *expires}
+	}
+	return err
 }
 
 type reader struct {
@@ -266,7 +290,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
         FROM memberships m LEFT JOIN LATERAL (
             SELECT * FROM messages WHERE conversation_id=m.conversation_id AND `+column+`>$3
             ORDER BY `+column+` LIMIT 100
-        ) page ON true LEFT JOIN users u ON u.id=page.sender_id
+        ) page ON true`+messageJoins+`
         WHERE m.conversation_id=$1 AND m.user_id=$2 ORDER BY page.`+column, id, user.ID, cursor)
 	if err != nil {
 		failure(w, r)

@@ -51,5 +51,6 @@ Tests create disposable accounts and use synthetic mail. Running the whole suite
 - [Shared read receipt architecture](docs/adr/0008-shared-read-receipts.md)
 - [Group member administration](docs/adr/0009-group-member-administration.md)
 - [Message edits and deletion](docs/adr/0010-message-edits-and-deletion.md)
+- [Resumable verified attachments](docs/adr/0011-resumable-attachments.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

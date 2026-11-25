@@ -1,4 +1,6 @@
 import { useOutbox } from './use-outbox'
+import { useTransfers } from './transfers'
+import { TransfersPage } from './uploads'
 import { purgeOutbox } from './outbox'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -196,6 +198,7 @@ function ReadReceiptSetting({ account, onAccount, onNotice }: {
 
 function Workspace({ account, onAccount, signOut }: { account: Account; onAccount: (user: Account) => void; signOut: () => void }) {
   const outbox = useOutbox(account.id)
+  const transfers = useTransfers(account.id)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [dark, setDark] = useState(() => localStorage.getItem('fluxparcel-theme') === 'dark'
     || (!localStorage.getItem('fluxparcel-theme') && matchMedia('(prefers-color-scheme: dark)').matches))
@@ -239,13 +242,10 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
       </nav>
       <main id="content" tabIndex={-1}>
         <Routes>
-          <Route path="/chats" element={<Chats account={account} outbox={outbox} />} />
-          <Route path="/chats/:id" element={<Chats account={account} outbox={outbox} />} />
+          <Route path="/chats" element={<Chats account={account} outbox={outbox} transfers={transfers} />} />
+          <Route path="/chats/:id" element={<Chats account={account} outbox={outbox} transfers={transfers} />} />
           <Route path="/contacts" element={<Contacts account={account} />} />
-          <Route path="/transfers" element={<div className="settings-content">
-            <header className="page-heading"><span className="section-icon"><ArrowDownUp size={23} aria-hidden /></span><h1>Transfers</h1></header>
-            <section className="settings-card"><h2>No transfers</h2><p className="muted">File sharing will be available in a later release.</p></section>
-          </div>} />
+          <Route path="/transfers" element={<TransfersPage transfers={transfers} />} />
           <Route path="/settings" element={<Settings account={account} onAccount={onAccount} signOut={signOut} />} />
           <Route path="*" element={<Navigate to="/chats" replace />} />
         </Routes>
