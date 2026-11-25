@@ -86,8 +86,8 @@ test('a paused upload stays paused across reloads and cancelling it lets cleanup
     await page.getByLabel('Attach files').setInputFiles({ name: 'paused.bin', mimeType: 'application/octet-stream', buffer: randomBytes(2 * partSize + 1) })
     const item = page.getByRole('listitem').filter({ hasText: 'paused.bin', has: page.getByRole('progressbar') })
     await expect.poll(() => watch.acknowledged.size).toBeGreaterThan(0)
+    // Reload immediately after pausing: the pause must survive even if its IndexedDB write has not finished.
     await item.getByRole('button', { name: 'Pause' }).click()
-    await expect(item.getByText(/Paused/)).toBeVisible()
     await page.reload()
     await expect(item.getByText(/Paused/)).toBeVisible()
     const requested = watch.requested.length
@@ -107,13 +107,28 @@ test('a paused upload stays paused across reloads and cancelling it lets cleanup
   }
 })
 
-test('large files up to the configured limit are accepted and split into parts', async ({ page, browser, request, baseURL }) => {
+test('files up to the 64 GiB default limit are accepted and split into parts', async ({ page, browser, request, baseURL }) => {
   const origin = baseURL!
   const headers = { Origin: origin }
   const { member, conversationId } = await setup(page, browser, request, origin, 'Large limits')
   try {
     const capabilities = await (await page.request.get('/v1/capabilities')).json()
-    expect(capabilities).toMatchObject({ transfers: true, maxFileSize: 8 * 1024 ** 3, partSize })
+    expect(capabilities).toMatchObject({ transfers: true, maxFileSize: 64 * 1024 ** 3, partSize, minPartSize: 5 << 20, maxPartSize: 64 << 20 })
+    // Clients may ask for another part size; the transfer records it and every part follows it.
+    const requested = await page.request.post('/v1/transfers', {
+      headers, data: { conversationId, clientId: randomUUID(), name: 'big-parts.bin', size: 100 << 20, sha256: 'a'.repeat(64), partSize: 16 << 20 },
+    })
+    expect(requested.status()).toBe(201)
+    const bigParts = await requested.json()
+    expect(bigParts).toMatchObject({ partSize: 16 << 20, partCount: 7 })
+    expect((await page.request.delete('/v1/transfers/' + bigParts.id, { headers })).status()).toBe(204)
+    for (const invalid of [4 << 20, 65 << 20, (8 << 20) + 1]) {
+      const refused = await page.request.post('/v1/transfers', {
+        headers, data: { conversationId, clientId: randomUUID(), name: 'bad-parts.bin', size: 100 << 20, sha256: 'a'.repeat(64), partSize: invalid },
+      })
+      expect(refused.status()).toBe(400)
+      expect((await refused.json()).code).toBe('invalid_part_size')
+    }
     const create = (size: number) => page.request.post('/v1/transfers', {
       headers, data: { conversationId, clientId: randomUUID(), name: 'video.mkv', size, sha256: 'a'.repeat(64) },
     })
@@ -121,12 +136,14 @@ test('large files up to the configured limit are accepted and split into parts',
     expect(sixGiB.status()).toBe(201)
     const transfer = await sixGiB.json()
     expect(transfer).toMatchObject({ partCount: 768, partSize, size: 6 * 1024 ** 3 })
-    const atLimit = await create(8 * 1024 ** 3)
+    const atLimit = await create(64 * 1024 ** 3)
     expect(atLimit.status()).toBe(201)
-    const tooLarge = await create(8 * 1024 ** 3 + 1)
+    const largest = await atLimit.json()
+    expect(largest).toMatchObject({ partCount: 8192, size: 64 * 1024 ** 3 })
+    const tooLarge = await create(64 * 1024 ** 3 + 1)
     expect(tooLarge.status()).toBe(400)
-    expect((await tooLarge.json()).message).toContain('8 GiB')
-    for (const id of [transfer.id, (await atLimit.json()).id]) {
+    expect((await tooLarge.json()).message).toContain('64 GiB')
+    for (const id of [transfer.id, largest.id]) {
       expect((await page.request.delete('/v1/transfers/' + id, { headers })).status()).toBe(204)
     }
   } finally {
@@ -146,6 +163,34 @@ test('the browser rejects files above the server limit before hashing them', asy
     await page.getByLabel('Attach files').setInputFiles({ name: 'too-big.bin', mimeType: 'application/octet-stream', buffer: randomBytes(2 << 20) })
     await expect(page.getByText('Files can be up to 1.0 MiB.', { exact: false })).toBeVisible()
     expect(created).toBe(0)
+  } finally {
+    await Promise.all([page.request, member.request].map(client => deleteAccount(client, baseURL!)))
+    await member.close()
+  }
+})
+
+test('the browser uploads with whatever part size the server assigns to a transfer', async ({ page, browser, request, baseURL }) => {
+  test.setTimeout(90000)
+  const { member, conversationId } = await setup(page, browser, request, baseURL!, 'Assigned parts')
+  try {
+    // Stand in for a server whose default differs from 8 MiB by asking for 5 MiB parts on the browser's behalf.
+    await page.route('**/v1/transfers', async route => {
+      if (route.request().method() !== 'POST') return route.continue()
+      await route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), partSize: 5 << 20 }) })
+    })
+    const sizes: number[] = []
+    page.on('request', item => {
+      if (item.method() === 'PUT' && /\/parts\/\d+$/.test(item.url())) sizes.push(item.postDataBuffer()?.length ?? 0)
+    })
+    const data = randomBytes((12 << 20) + 321)
+    await page.goto('/chats/' + conversationId)
+    await page.getByLabel('Attach files').setInputFiles({ name: 'assigned.bin', mimeType: 'application/octet-stream', buffer: data })
+    const item = page.getByRole('listitem').filter({ hasText: 'assigned.bin', has: page.getByRole('progressbar') })
+    await expect(item).toHaveCount(0, { timeout: 30000 })
+    expect(sizes.sort((a, b) => b - a)).toEqual([5 << 20, 5 << 20, (2 << 20) + 321])
+    const [message] = await (await member.request.get('/v1/conversations/' + conversationId + '/messages')).json()
+    expect(message.file.sha256).toBe(sha256(data))
+    expect(sha256(await (await member.request.get('/v1/files/' + message.file.id + '/content')).body())).toBe(sha256(data))
   } finally {
     await Promise.all([page.request, member.request].map(client => deleteAccount(client, baseURL!)))
     await member.close()

@@ -51,7 +51,7 @@ type attachment struct {
 const messageColumns = `page.sequence,page.version,page.client_id,COALESCE(page.sender_id::text,''),
         COALESCE(u.display_name,'Deleted account'),page.body,page.created_at,page.edited_at,page.deleted_at,
         CASE WHEN page.deleted_at IS NULL THEN f.id::text END,f.name,f.mime,f.size,encode(f.sha256,'hex'),f.scan_status,f.expires_at,
-        f.removed_at IS NULL AND f.expires_at>now()`
+        f.lifecycle='active' AND f.expires_at>now()`
 
 // messageJoins adds each message's sender and attachment to a query that aliases messages as "page".
 const messageJoins = ` LEFT JOIN users u ON u.id=page.sender_id LEFT JOIN files f ON f.id=page.file_id`

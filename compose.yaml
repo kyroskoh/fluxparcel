@@ -72,7 +72,11 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
       TRUST_PROXY: "true"
       RATE_LIMIT_SCALE: ${RATE_LIMIT_SCALE:-1}
-      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-8589934592}
+      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-68719476736}
+      TRANSFER_PART_SIZE: ${TRANSFER_PART_SIZE:-8388608}
+      FILE_RETENTION: ${FILE_RETENTION:-720h}
+      SNAPSHOT_RETENTION: &snapshot_retention ${SNAPSHOT_RETENTION:-720h}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       DATABASE_URL: *database
       REDIS_URL: redis://redis:6379/0
       SMTP_ADDRESS: mail:1025
@@ -100,11 +104,15 @@ services:
       <<: *storage
       DATABASE_URL: *database
       CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1m}
+      SNAPSHOT_RETENTION: *snapshot_retention
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       migrate:
         condition: service_completed_successfully
       bucket:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   web:
     image: fluxparcel-web:local

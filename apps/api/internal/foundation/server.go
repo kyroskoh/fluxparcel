@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,8 +21,16 @@ import (
 type Server struct {
 	// RateLimitScale multiplies every per-address limit. Values below 1 keep the defaults.
 	RateLimitScale int64
+	// PartSize overrides DefaultPartSize for new transfers when positive.
+	PartSize int64
 	// MaxFileSize overrides DefaultMaxFileSize when positive.
-	MaxFileSize      int64
+	MaxFileSize int64
+	// FileRetention is the default and longest file lifetime; zero means DefaultFileRetention.
+	FileRetention time.Duration
+	// SnapshotRetention keeps expired files for administrator restoration; zero disables snapshots.
+	SnapshotRetention time.Duration
+	// AdminEmails lists, in lower case, the verified accounts allowed to administer storage.
+	AdminEmails      []string
 	liveSlots        chan struct{}
 	DB               *pgxpool.Pool
 	Cache            *redis.Client
@@ -33,19 +42,51 @@ type Server struct {
 	SendVerification func(context.Context, string, string) error
 	dummyHash        []byte
 	passwordWork     chan struct{}
-	partSlots        chan struct{}
+	partMemory       *byteBudget
 }
 
 type requestIDKey struct{}
 
 // DefaultMaxFileSize is the largest attachment accepted unless the deployment configures another limit.
-const DefaultMaxFileSize = 8 << 30
+const DefaultMaxFileSize = 64 << 30
+
+func (s *Server) partSize() int64 {
+	if s.PartSize > 0 {
+		return s.PartSize
+	}
+	return DefaultPartSize
+}
 
 func (s *Server) maxFileSize() int64 {
 	if s.MaxFileSize > 0 {
 		return s.MaxFileSize
 	}
 	return DefaultMaxFileSize
+}
+
+// DefaultFileRetention keeps files for 30 days unless the sender or deployment chooses less.
+const DefaultFileRetention = 30 * 24 * time.Hour
+
+// minFileLifetime is the shortest expiry a sender may choose.
+const minFileLifetime = time.Minute
+
+func (s *Server) fileRetention() time.Duration {
+	if s.FileRetention > 0 {
+		return s.FileRetention
+	}
+	return DefaultFileRetention
+}
+
+func (s *Server) isAdmin(user account) bool {
+	if !user.Verified {
+		return false
+	}
+	for _, email := range s.AdminEmails {
+		if strings.EqualFold(email, user.Email) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) scaledLimit(maximum int64) int64 {
@@ -58,8 +99,9 @@ func (s *Server) scaledLimit(maximum int64) int64 {
 func (s *Server) Handler() http.Handler {
 	s.liveSlots = make(chan struct{}, 256)
 	s.passwordWork = make(chan struct{}, 4)
-	// Each part upload buffers at most one 8 MiB part, so this bounds part memory to 64 MiB.
-	s.partSlots = make(chan struct{}, 8)
+	// Part uploads buffer whole parts while verifying them. The budget allows eight default-size parts and at
+	// least two of the largest allowed size.
+	s.partMemory = &byteBudget{limit: max(8*s.partSize(), 2*MaxPartSize)}
 	s.dummyHash = hashPassword("dummy-password-for-missing-users")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -68,7 +110,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, 200, map[string]any{"messaging": true, "transfers": true, "invitations": true, "webPush": false,
-			"maxFileSize": s.maxFileSize(), "partSize": transferPartSize})
+			"maxFileSize": s.maxFileSize(), "partSize": s.partSize(), "minPartSize": MinPartSize, "maxPartSize": MaxPartSize, "minFileLifetime": int64(minFileLifetime.Seconds()),
+			"fileRetention": int64(s.fileRetention().Seconds()), "snapshotRetention": int64(s.SnapshotRetention.Seconds())})
 	})
 	mux.HandleFunc("POST /v1/auth/register", s.limit("register", 24, s.boundPasswordWork(s.register)))
 	mux.HandleFunc("POST /v1/auth/login", s.limit("login", 20, s.boundPasswordWork(s.login)))
@@ -83,6 +126,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/account/devices/{id}", s.revokeDevice)
 	s.chatRoutes(mux)
 	s.transferRoutes(mux)
+	s.adminRoutes(mux)
 	mux.HandleFunc("GET "+livePath, s.limit("live-open", 120, s.liveMessages))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 404, "not_found", "Endpoint unavailable.")

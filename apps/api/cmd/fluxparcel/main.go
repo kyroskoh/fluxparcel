@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/lifecycle"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -96,6 +97,13 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 			return fmt.Errorf("RATE_LIMIT_SCALE must be between 1 and 20")
 		}
 	}
+	partSize := int64(foundation.DefaultPartSize)
+	if value := os.Getenv("TRANSFER_PART_SIZE"); value != "" {
+		partSize, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || partSize < foundation.MinPartSize || partSize > foundation.MaxPartSize || partSize%(1<<20) != 0 {
+			return fmt.Errorf("TRANSFER_PART_SIZE must be 5–64 MiB in whole MiB, in bytes")
+		}
+	}
 	maxFileSize := int64(foundation.DefaultMaxFileSize)
 	if value := os.Getenv("MAX_FILE_SIZE"); value != "" {
 		maxFileSize, err = strconv.ParseInt(value, 10, 64)
@@ -103,11 +111,22 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 			return fmt.Errorf("MAX_FILE_SIZE must be between 1 MiB and 64 GiB in bytes")
 		}
 	}
+	retention, err := lifecycleSettings()
+	if err != nil {
+		return err
+	}
+	var admins []string
+	for _, email := range strings.Split(os.Getenv("ADMIN_EMAILS"), ",") {
+		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
+			admins = append(admins, email)
+		}
+	}
 	app := &foundation.Server{
 		DB: db, Cache: cache, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), Origin: origin,
 		SecureCookies: public.Scheme == "https", TrustProxy: os.Getenv("TRUST_PROXY") == "true",
 		RateLimitScale: rateLimitScale,
-		MaxFileSize:    maxFileSize,
+		MaxFileSize:    maxFileSize, PartSize: partSize,
+		FileRetention: retention.file, SnapshotRetention: retention.snapshot, AdminEmails: admins,
 		SendVerification: func(ctx context.Context, to, token string) error {
 			dialer := net.Dialer{Timeout: 3 * time.Second}
 			conn, err := dialer.DialContext(ctx, "tcp", smtpAddress)
@@ -198,6 +217,15 @@ func initStorage(ctx context.Context) error {
 		}
 		stop()
 		if err == nil {
+			// Storage-level backstop for abandoned multipart uploads. The worker's cleanup is authoritative;
+			// some S3-compatible stores do not support lifecycle rules, so a refusal is only reported.
+			rules := lifecycle.NewConfiguration()
+			rules.Rules = []lifecycle.Rule{{ID: "abort-abandoned-uploads", Status: "Enabled",
+				RuleFilter:                     lifecycle.Filter{Prefix: "files/"},
+				AbortIncompleteMultipartUpload: lifecycle.AbortIncompleteMultipartUpload{DaysAfterInitiation: 8}}}
+			if err := objects.SetBucketLifecycle(limit, bucket, rules); err != nil {
+				slog.Warn("bucket lifecycle rules unavailable; relying on worker cleanup")
+			}
 			return nil
 		}
 		select {
@@ -223,7 +251,24 @@ func work(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	janitor := &foundation.Janitor{DB: db, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), OrphanAge: 24 * time.Hour}
+	retention, err := lifecycleSettings()
+	if err != nil {
+		return err
+	}
+	janitor := &foundation.Janitor{DB: db, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), OrphanAge: 24 * time.Hour,
+		SnapshotRetention: retention.snapshot}
+	// Expiry notices reach open chats immediately when Redis is configured; otherwise chats see them on their next sync.
+	if value := os.Getenv("REDIS_URL"); value != "" {
+		options, err := redis.ParseURL(value)
+		if err != nil {
+			return fmt.Errorf("invalid REDIS_URL")
+		}
+		cache := redis.NewClient(options)
+		defer cache.Close()
+		janitor.Notify = func(ctx context.Context, conversationID string) {
+			foundation.PublishMessageChange(ctx, cache, conversationID)
+		}
+	}
 	for pass := 0; ; pass++ {
 		if _, err := db.Exec(ctx, `DELETE FROM device_sessions WHERE id IN (
             SELECT id FROM device_sessions WHERE expires_at<=now() ORDER BY expires_at LIMIT 500)`); err != nil && ctx.Err() == nil {
@@ -236,8 +281,8 @@ func work(ctx context.Context, db *pgxpool.Pool) error {
 		step, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		if report, err := janitor.Sweep(step); err != nil && ctx.Err() == nil {
 			slog.Warn("file cleanup failed")
-		} else if report.Transfers+report.Files > 0 {
-			slog.Info("file cleanup", "transfers", report.Transfers, "files", report.Files)
+		} else if report.Transfers+report.Expired+report.Purged > 0 {
+			slog.Info("file cleanup", "transfers", report.Transfers, "expired", report.Expired, "purged", report.Purged)
 		}
 		if pass%60 == 0 {
 			if report, err := janitor.Reconcile(step); err != nil && ctx.Err() == nil {
@@ -253,4 +298,27 @@ func work(ctx context.Context, db *pgxpool.Pool) error {
 		case <-time.After(interval):
 		}
 	}
+}
+
+type retention struct{ file, snapshot time.Duration }
+
+// lifecycleSettings reads FILE_RETENTION, the default and longest file lifetime, and SNAPSHOT_RETENTION, how long
+// expired files stay restorable by administrators ("0" disables snapshots). Both use Go durations such as "720h".
+func lifecycleSettings() (retention, error) {
+	settings := retention{file: foundation.DefaultFileRetention, snapshot: foundation.DefaultFileRetention}
+	if value := os.Getenv("FILE_RETENTION"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < time.Minute || parsed > 24*365*time.Hour {
+			return settings, fmt.Errorf("FILE_RETENTION must be between 1m and 8760h")
+		}
+		settings.file = parsed
+	}
+	if value := os.Getenv("SNAPSHOT_RETENTION"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < 0 || parsed > 24*365*time.Hour {
+			return settings, fmt.Errorf("SNAPSHOT_RETENTION must be between 0 and 8760h")
+		}
+		settings.snapshot = parsed
+	}
+	return settings, nil
 }

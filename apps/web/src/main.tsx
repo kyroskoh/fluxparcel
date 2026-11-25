@@ -1,6 +1,7 @@
 import { useOutbox } from './use-outbox'
 import { useTransfers } from './transfers'
 import { TransfersPage } from './uploads'
+import { StorageAdmin } from './admin'
 import { purgeOutbox } from './outbox'
 import { purgeUploads } from './upload-store'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
@@ -158,6 +159,11 @@ function Settings({ account, onAccount, signOut }: {
         </li>)}
       </ul>
     </section>
+    {account.admin && <section className="settings-card">
+      <h2>Administration</h2>
+      <p className="muted">Review storage usage and restore or purge expired file snapshots.</p>
+      <Link className="secondary" to="/admin/storage">Storage administration</Link>
+    </section>}
     <section className="settings-card">
       <h2>Delete account</h2>
       <p className="muted">Permanently delete your account and sign out all devices.</p>
@@ -248,6 +254,7 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
           <Route path="/contacts" element={<Contacts account={account} />} />
           <Route path="/transfers" element={<TransfersPage transfers={transfers} />} />
           <Route path="/settings" element={<Settings account={account} onAccount={onAccount} signOut={signOut} />} />
+          {account.admin && <Route path="/admin/storage" element={<StorageAdmin />} />}
           <Route path="*" element={<Navigate to="/chats" replace />} />
         </Routes>
       </main>

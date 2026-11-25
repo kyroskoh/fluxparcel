@@ -16,10 +16,18 @@ func messageChannel(conversationID string) string {
 }
 
 func (s *Server) notifyMessage(ctx context.Context, conversationID string) {
+	PublishMessageChange(ctx, s.Cache, conversationID)
+}
+
+// PublishMessageChange tells open chats in a conversation to synchronize. The committed change remains
+// available to cursor synchronization if Redis is unavailable.
+func PublishMessageChange(ctx context.Context, cache *redis.Client, conversationID string) {
+	if cache == nil {
+		return
+	}
 	notify, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 	defer cancel()
-	// The committed message remains available to cursor synchronization if Redis is unavailable.
-	_ = s.Cache.Publish(notify, messageChannel(conversationID), "changed").Err()
+	_ = cache.Publish(notify, messageChannel(conversationID), "changed").Err()
 }
 
 func (s *Server) liveAllowed(ctx context.Context, sessionHash []byte, conversationID string) (bool, error) {

@@ -13,6 +13,8 @@ export type UploadRecord = {
   lastModified: number
   sha256?: string
   transferId?: string
+  // The sender's chosen file lifetime in seconds; the server default applies when absent.
+  expiresInSeconds?: number
   paused: boolean
   error?: string
   createdAt: number
@@ -57,6 +59,7 @@ export async function removeUpload(accountId: string, id: string) {
 }
 
 export async function purgeUploads(accountId: string) {
+  try { localStorage.removeItem('fluxparcel-paused-uploads:' + accountId) } catch { /* nothing stored */ }
   const db = await openUploads()
   const transaction = db.transaction('uploads', 'readwrite')
   for (const key of await transaction.store.index('by-account').getAllKeys(accountId)) await transaction.store.delete(key)

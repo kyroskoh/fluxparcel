@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api, ApiError } from './api'
+import { loadCapabilities } from './capabilities'
 import { loadUploads, removeUpload, saveUpload, uploadChannel, type UploadRecord } from './upload-store'
 
 export type UploadState = 'preparing' | 'queued' | 'uploading' | 'paused' | 'waiting' | 'retrying' | 'verifying'
@@ -36,7 +37,7 @@ type Upload = {
 const maxActiveUploads = 3
 const partsPerUpload = 2
 const maxAttempts = 5
-const defaultMaxFileSize = 8 * 1024 ** 3
+const defaultMaxFileSize = 64 * 1024 ** 3
 const running: UploadState[] = ['preparing', 'uploading', 'retrying', 'verifying']
 const terminal: UploadState[] = ['completed', 'cancelled']
 const lockName = (id: string) => 'fluxparcel-upload:' + id
@@ -100,7 +101,7 @@ export class TransferManager {
       this.channel = new BroadcastChannel(uploadChannel(this.accountId))
       this.channel.onmessage = () => void this.restore()
     }
-    void api<{ maxFileSize?: number }>('/capabilities').then(capabilities => {
+    void loadCapabilities().then(capabilities => {
       if (capabilities.maxFileSize) this.maxFileSize = capabilities.maxFileSize
     }).catch(() => undefined)
     void this.restore().then(() => this.pump())
@@ -118,12 +119,12 @@ export class TransferManager {
     }
   }
 
-  add(conversationId: string, files: Iterable<File>) {
+  add(conversationId: string, files: Iterable<File>, expiresInSeconds?: number) {
     for (const file of files) {
       const id = crypto.randomUUID()
       const record: UploadRecord = {
         accountId: this.accountId, id, conversationId, name: file.name, size: file.size, type: file.type,
-        lastModified: file.lastModified, paused: false, createdAt: Date.now(),
+        lastModified: file.lastModified, expiresInSeconds, paused: false, createdAt: Date.now(),
       }
       const upload: Upload = {
         record, file, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
@@ -159,6 +160,7 @@ export class TransferManager {
     const upload = this.uploads.get(id)
     if (!upload || terminal.includes(upload.job.state) || ['verifying', 'elsewhere'].includes(upload.job.state)) return
     upload.record.paused = true
+    this.rememberPause(id, true)
     this.persist(upload)
     this.interrupt(upload, 'paused')
     this.pump()
@@ -169,6 +171,7 @@ export class TransferManager {
     if (!upload || !['paused', 'failed', 'waiting'].includes(upload.job.state)) return
     upload.attempts = 0
     upload.record.paused = false
+    this.rememberPause(id, false)
     upload.record.error = undefined
     this.persist(upload)
     this.update(upload, { state: this.ready(upload) ? 'queued' : 'needs-file', error: '' })
@@ -204,7 +207,28 @@ export class TransferManager {
     void saveUpload(upload.record).then(() => this.channel?.postMessage('changed')).catch(() => undefined)
   }
 
+  // Pause intent is also written synchronously to localStorage, because an IndexedDB write can still be in flight
+  // when the page reloads; a manual pause must survive an immediate refresh.
+  private pausedKey() {
+    return 'fluxparcel-paused-uploads:' + this.accountId
+  }
+
+  private pausedIds() {
+    try { return new Set<string>(JSON.parse(localStorage.getItem(this.pausedKey()) ?? '[]')) } catch { return new Set<string>() }
+  }
+
+  private rememberPause(id: string, paused: boolean) {
+    const ids = this.pausedIds()
+    if (paused) ids.add(id)
+    else ids.delete(id)
+    try {
+      if (ids.size) localStorage.setItem(this.pausedKey(), JSON.stringify([...ids]))
+      else localStorage.removeItem(this.pausedKey())
+    } catch { /* IndexedDB still records the intent */ }
+  }
+
   private forget(upload: Upload) {
+    this.rememberPause(upload.record.id, false)
     void removeUpload(this.accountId, upload.record.id).then(() => this.channel?.postMessage('changed')).catch(() => undefined)
   }
 
@@ -219,6 +243,8 @@ export class TransferManager {
       for (const lock of state.held ?? []) if (lock.name) held.add(lock.name)
     }
     const known = new Set(records.map(record => record.id))
+    const paused = this.pausedIds()
+    for (const id of paused) if (!known.has(id)) this.rememberPause(id, false)
     for (const [id, upload] of this.uploads) {
       // Another tab finished, cancelled or dismissed this upload.
       if (!known.has(id) && !upload.controller && !terminal.includes(upload.job.state) && upload.job.state !== 'failed') this.uploads.delete(id)
@@ -234,7 +260,10 @@ export class TransferManager {
       upload.record = record
       this.uploads.set(record.id, upload)
       if (held.has(lockName(record.id))) this.update(upload, { state: 'elsewhere', error: '' })
-      else if (record.paused) this.update(upload, { state: 'paused', error: record.error ?? '' })
+      else if (record.paused || paused.has(record.id)) {
+        record.paused = true
+        this.update(upload, { state: 'paused', error: record.error ?? '' })
+      }
       else if (!upload.file) this.update(upload, { state: 'needs-file', error: record.error ?? '' })
       else if (upload.job.state === 'elsewhere') this.update(upload, { state: 'queued', error: '' })
       if (record.transferId && !upload.file) pending.push(upload)
@@ -372,7 +401,7 @@ export class TransferManager {
       this.update(upload, { state: 'uploading' })
       upload.transfer = await this.withRetry(upload, signal, () => api<TransferView>('/transfers', 'POST', {
         conversationId: record.conversationId, clientId: record.id, name: record.name, size: record.size,
-        mime: record.type, sha256: record.sha256,
+        mime: record.type, sha256: record.sha256, ...(record.expiresInSeconds ? { expiresInSeconds: record.expiresInSeconds } : {}),
       }, true, signal))
       if (record.transferId !== upload.transfer.id) {
         record.transferId = upload.transfer.id
@@ -529,7 +558,7 @@ export function useTransfers(accountId: string) {
   return {
     accountId,
     jobs,
-    add: (conversationId: string, files: Iterable<File>) => manager.add(conversationId, files),
+    add: (conversationId: string, files: Iterable<File>, expiresInSeconds?: number) => manager.add(conversationId, files, expiresInSeconds),
     reselect: (id: string, file: File) => manager.reselect(id, file),
     pause: (id: string) => manager.pause(id),
     resume: (id: string) => manager.resume(id),
