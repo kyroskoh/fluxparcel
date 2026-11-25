@@ -25,7 +25,6 @@ import (
 
 const (
 	transferPartSize  = 8 << 20
-	maxTransferSize   = 2 << 30
 	transferRetention = 7 * 24 * time.Hour
 	fileRetention     = 30 * 24 * time.Hour
 	// staleVerification lets a later completion take over from one that stopped mid-verification.
@@ -155,8 +154,8 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 400, "invalid_file", "Enter a file name of 1–255 characters, a client ID and a SHA-256 checksum.")
 		return
 	}
-	if input.Size < 1 || input.Size > maxTransferSize {
-		problem(w, r, 400, "file_too_large", "Choose a file of up to 2 GiB.")
+	if input.Size < 1 || input.Size > s.maxFileSize() {
+		problem(w, r, 400, "file_too_large", "Choose a file of up to "+formatGiB(s.maxFileSize())+".")
 		return
 	}
 	ctx := r.Context()
@@ -202,6 +201,11 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 	uploadID, err := core.NewMultipartUpload(ctx, s.Bucket, key, minio.PutObjectOptions{ContentType: "application/octet-stream"})
 	if err != nil {
 		problem(w, r, 503, "storage_unavailable", "File storage is temporarily unavailable.")
+		return
+	}
+	if _, err := s.DB.Exec(ctx, `INSERT INTO multipart_uploads(upload_id,object_key) VALUES ($1,$2)`, uploadID, key); err != nil {
+		_ = core.AbortMultipartUpload(context.WithoutCancel(ctx), s.Bucket, key, uploadID)
+		failure(w, r)
 		return
 	}
 	var id string
@@ -392,6 +396,8 @@ func (s *Server) completeTransfer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The upload is finished; only the object remains to clean up if verification fails.
+	_, _ = s.DB.Exec(work, `DELETE FROM multipart_uploads WHERE upload_id=$1`, t.uploadID)
 	object, err := s.Objects.GetObject(work, s.Bucket, t.objectKey, minio.GetObjectOptions{})
 	hash := sha256.New()
 	var hashed int64
@@ -521,7 +527,7 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	err := s.DB.QueryRow(r.Context(), `SELECT f.object_key,f.name,f.sha256 FROM files f
         JOIN messages m ON m.file_id=f.id AND m.deleted_at IS NULL
         JOIN memberships mb ON mb.conversation_id=f.conversation_id AND mb.user_id=$2
-        WHERE f.id=$1 AND f.expires_at>now() AND f.scan_status<>'rejected'`, id, user.ID).Scan(&key, &name, &sum)
+        WHERE f.id=$1 AND f.expires_at>now() AND f.removed_at IS NULL AND f.scan_status<>'rejected'`, id, user.ID).Scan(&key, &name, &sum)
 	if !chatResult(w, r, err) {
 		return
 	}
@@ -535,7 +541,6 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer object.Close()
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Hour))
 	checksum := hex.EncodeToString(sum)
 	header := w.Header()
 	header.Set("ETag", `"`+checksum+`"`)
@@ -544,5 +549,21 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	header.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	header.Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	header.Set("Cache-Control", "private, no-store")
-	http.ServeContent(w, r, "", time.Time{}, object)
+	// Large downloads can run for hours; only a stalled client is cut off.
+	http.ServeContent(&idleWriter{ResponseWriter: w, control: http.NewResponseController(w)}, r, "", time.Time{}, object)
+}
+
+// idleWriter extends the write deadline after every write, so a download ends only when the client stops reading.
+type idleWriter struct {
+	http.ResponseWriter
+	control *http.ResponseController
+}
+
+func (w *idleWriter) Write(data []byte) (int, error) {
+	_ = w.control.SetWriteDeadline(time.Now().Add(2 * time.Minute))
+	return w.ResponseWriter.Write(data)
+}
+
+func formatGiB(size int64) string {
+	return strconv.FormatFloat(float64(size)/(1<<30), 'f', -1, 64) + " GiB"
 }

@@ -13,7 +13,7 @@ type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'memb
 type Message = {
   sequence: number; version: number; clientId: string; senderId: string; sender: string; body: string
   createdAt: string; editedAt?: string; deletedAt?: string
-  file?: { id: string; name: string; mime: string; size: number; sha256: string; scanStatus: string; expiresAt: string }
+  file?: { id: string; name: string; mime: string; size: number; sha256: string; scanStatus: string; expiresAt: string; available: boolean }
 }
 
 const editWindow = 24 * 60 * 60 * 1000
@@ -433,9 +433,9 @@ function TextChat({ group, account, outbox, transfers, onRead }: {
                 <Paperclip size={18} aria-hidden />
                 <div className="attachment-details">
                   <strong className="upload-name">{message.file.name}</strong>
-                  <small>{formatBytes(message.file.size)} · Not scanned for malware</small>
+                  <small>{formatBytes(message.file.size)} · {message.file.available ? 'Not scanned for malware' : 'File no longer available'}</small>
                 </div>
-                <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>
+                {message.file.available && <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>}
               </div>}
             </>}
           <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>

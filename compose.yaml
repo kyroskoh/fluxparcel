@@ -72,6 +72,7 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
       TRUST_PROXY: "true"
       RATE_LIMIT_SCALE: ${RATE_LIMIT_SCALE:-1}
+      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-8589934592}
       DATABASE_URL: *database
       REDIS_URL: redis://redis:6379/0
       SMTP_ADDRESS: mail:1025
@@ -96,9 +97,13 @@ services:
     pull_policy: never
     command: ["worker"]
     environment:
+      <<: *storage
       DATABASE_URL: *database
+      CLEANUP_INTERVAL: ${CLEANUP_INTERVAL:-1m}
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      bucket:
         condition: service_completed_successfully
 
   web:

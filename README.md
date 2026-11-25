@@ -18,7 +18,7 @@ openssl rand -hex 24
 docker compose up --build --wait
 ```
 
-Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. The stack uses development-only HTTP settings.
+Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. Attachments can be up to 8 GiB; set `MAX_FILE_SIZE` in bytes to change the limit. The worker cleans up expired and abandoned uploads every `CLEANUP_INTERVAL` (default `1m`). The stack uses development-only HTTP settings.
 
 `docker compose stop` stops services while retaining their data. `docker compose run --rm --no-deps migrate` reruns the idempotent migration command against a running stack. When serving an HTTPS deployment, terminate TLS at a trusted edge and configure the API with the public HTTPS origin (for example, `APP_ORIGIN=https://fluxparcel.xyz`), private dependencies and a trusted SMTP relay. Leave proxy IP trust disabled unless the API is reachable exclusively through a proxy that overwrites `X-Real-IP`.
 
@@ -36,7 +36,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Tests create disposable accounts and use synthetic mail. Running the whole suite more than once a minute can exceed the per-address rate limits. For a disposable stack, start Compose with `RATE_LIMIT_SCALE=5` as CI does. Leave it unset elsewhere. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
+Tests create disposable accounts and use synthetic mail. Running the whole suite more than once a minute can exceed the per-address rate limits. For a disposable stack, start Compose with `RATE_LIMIT_SCALE=5` and `CLEANUP_INTERVAL=2s` as CI does. Leave them unset elsewhere. CI also adds `compose.test.yaml`, which publishes PostgreSQL and S3 on loopback for the storage integration test in `apps/api`; never use it for a shared or production stack. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
 
 - [Product requirements](PRD.md)
 - [Roadmap](ROADMAP.md)
@@ -52,5 +52,6 @@ Tests create disposable accounts and use synthetic mail. Running the whole suite
 - [Group member administration](docs/adr/0009-group-member-administration.md)
 - [Message edits and deletion](docs/adr/0010-message-edits-and-deletion.md)
 - [Resumable verified attachments](docs/adr/0011-resumable-attachments.md)
+- [Persisted uploads, large files and storage cleanup](docs/adr/0012-persisted-uploads-and-cleanup.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

@@ -2,6 +2,7 @@ import { useOutbox } from './use-outbox'
 import { useTransfers } from './transfers'
 import { TransfersPage } from './uploads'
 import { purgeOutbox } from './outbox'
+import { purgeUploads } from './upload-store'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
@@ -299,6 +300,10 @@ function App() {
     if (account) {
       void purgeOutbox(account.id).catch(() => {
         setError('Signed out. The local message queue could not be cleared.')
+      })
+      // Unfinished uploads stay on the server until they expire; this device forgets them.
+      void purgeUploads(account.id).catch(() => {
+        setError('Signed out. The local upload list could not be cleared.')
       })
     }
     navigate('/login', { replace: true })
