@@ -50,5 +50,6 @@ Tests create disposable accounts and use synthetic mail. Running the whole suite
 - [Private read cursor architecture](docs/adr/0007-private-read-cursors.md)
 - [Shared read receipt architecture](docs/adr/0008-shared-read-receipts.md)
 - [Group member administration](docs/adr/0009-group-member-administration.md)
+- [Message edits and deletion](docs/adr/0010-message-edits-and-deletion.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

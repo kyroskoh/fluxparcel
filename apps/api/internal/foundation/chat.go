@@ -1,6 +1,7 @@
 package foundation
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"strconv"
@@ -21,12 +22,24 @@ type conversation struct {
 }
 
 type message struct {
-	Sequence int64     `json:"sequence"`
-	ClientID string    `json:"clientId"`
-	SenderID string    `json:"senderId"`
-	Sender   string    `json:"sender"`
-	Body     string    `json:"body"`
-	Created  time.Time `json:"createdAt"`
+	Sequence int64      `json:"sequence"`
+	Version  int64      `json:"version"`
+	ClientID string     `json:"clientId"`
+	SenderID string     `json:"senderId"`
+	Sender   string     `json:"sender"`
+	Body     string     `json:"body"`
+	Created  time.Time  `json:"createdAt"`
+	Edited   *time.Time `json:"editedAt,omitempty"`
+	Deleted  *time.Time `json:"deletedAt,omitempty"`
+}
+
+// messageColumns reads a message aliased as "page" and its sender aliased as "u".
+const messageColumns = `page.sequence,page.version,page.client_id,COALESCE(page.sender_id::text,''),
+        COALESCE(u.display_name,'Deleted account'),page.body,page.created_at,page.edited_at,page.deleted_at`
+
+func scanMessage(row pgx.Row, item *message) error {
+	return row.Scan(&item.Sequence, &item.Version, &item.ClientID, &item.SenderID, &item.Sender, &item.Body,
+		&item.Created, &item.Edited, &item.Deleted)
 }
 
 type reader struct {
@@ -46,6 +59,7 @@ const maxReceiptReaders = 200
 func (s *Server) chatRoutes(mux *http.ServeMux) {
 	s.contactRoutes(mux)
 	s.memberRoutes(mux)
+	s.messageEditRoutes(mux)
 	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("POST /v1/conversations", s.limit("group-create", 20, s.createGroup))
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.listMessages)
@@ -79,7 +93,8 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.DB.Query(r.Context(), `SELECT c.id,COALESCE(peer.display_name,c.title),m.role,c.kind,
             (SELECT count(*) FROM messages unread WHERE unread.conversation_id=c.id
-                AND unread.sequence>m.read_sequence AND unread.sender_id IS DISTINCT FROM m.user_id)
+                AND unread.sequence>m.read_sequence AND unread.sender_id IS DISTINCT FROM m.user_id
+                AND unread.deleted_at IS NULL)
         FROM memberships m JOIN conversations c ON c.id=m.conversation_id
         LEFT JOIN direct_pairs p ON p.conversation_id=c.id
         LEFT JOIN users peer ON peer.id=CASE WHEN p.first_user=m.user_id THEN p.second_user ELSE p.first_user END
@@ -227,23 +242,32 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 		missing(w, r)
 		return
 	}
-	var after int64
-	if cursor := r.URL.Query().Get("after"); cursor != "" {
+	// "after" pages new messages by sequence; "changedSince" pages sends, edits and deletions by version.
+	query := r.URL.Query()
+	column, cursorText := "sequence", query.Get("after")
+	if changed := query.Get("changedSince"); changed != "" {
+		if cursorText != "" {
+			problem(w, r, 400, "invalid_cursor", "Use either after or changedSince.")
+			return
+		}
+		column, cursorText = "version", changed
+	}
+	var cursor int64
+	if cursorText != "" {
 		var err error
-		after, err = strconv.ParseInt(cursor, 10, 64)
-		if err != nil || after < 0 {
+		cursor, err = strconv.ParseInt(cursorText, 10, 64)
+		if err != nil || cursor < 0 {
 			problem(w, r, 400, "invalid_cursor", "Invalid message cursor.")
 			return
 		}
 	}
 	// A single statement checks membership and reads the page on the same snapshot.
-	rows, err := s.DB.Query(r.Context(), `SELECT page.sequence,page.client_id,
-        COALESCE(page.sender_id::text,''),COALESCE(u.display_name,'Deleted account'),page.body,page.created_at
+	rows, err := s.DB.Query(r.Context(), `SELECT `+messageColumns+`
         FROM memberships m LEFT JOIN LATERAL (
-            SELECT * FROM messages WHERE conversation_id=m.conversation_id AND sequence>$3
-            ORDER BY sequence LIMIT 100
+            SELECT * FROM messages WHERE conversation_id=m.conversation_id AND `+column+`>$3
+            ORDER BY `+column+` LIMIT 100
         ) page ON true LEFT JOIN users u ON u.id=page.sender_id
-        WHERE m.conversation_id=$1 AND m.user_id=$2 ORDER BY page.sequence`, id, user.ID, after)
+        WHERE m.conversation_id=$1 AND m.user_id=$2 ORDER BY page.`+column, id, user.ID, cursor)
 	if err != nil {
 		failure(w, r)
 		return
@@ -257,7 +281,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var item message
-		if err := rows.Scan(&item.Sequence, &item.ClientID, &item.SenderID, &item.Sender, &item.Body, &item.Created); err != nil {
+		if err := scanMessage(rows, &item); err != nil {
 			failure(w, r)
 			return
 		}
@@ -311,11 +335,14 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var storedID string
+	var storedDigest []byte
 	item := message{ClientID: input.ClientID, SenderID: user.ID, Sender: user.DisplayName}
-	err = tx.QueryRow(ctx, `SELECT conversation_id,sequence,body,created_at FROM messages WHERE sender_id=$1 AND client_id=$2`,
-		user.ID, input.ClientID).Scan(&storedID, &item.Sequence, &item.Body, &item.Created)
+	err = tx.QueryRow(ctx, `SELECT conversation_id,sequence,version,body,body_digest,created_at,edited_at,deleted_at
+        FROM messages WHERE sender_id=$1 AND client_id=$2`, user.ID, input.ClientID).
+		Scan(&storedID, &item.Sequence, &item.Version, &item.Body, &storedDigest, &item.Created, &item.Edited, &item.Deleted)
 	if err == nil {
-		if storedID != id || item.Body != input.Body {
+		// Compare the original text, so a retry still succeeds after the message was edited or deleted.
+		if storedID != id || !bytes.Equal(storedDigest, digest(input.Body)) {
 			problem(w, r, 409, "message_conflict", "This client message ID is already in use.")
 			return
 		}
@@ -327,18 +354,20 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item.Sequence, item.Body = sequence, input.Body
-	err = tx.QueryRow(ctx, `INSERT INTO messages(conversation_id,sequence,sender_id,client_id,body)
-        VALUES ($1,$2,$3,$4,$5) RETURNING created_at`, id, sequence, user.ID, input.ClientID, input.Body).Scan(&item.Created)
+	if err = tx.QueryRow(ctx, `UPDATE conversations SET next_sequence=next_sequence+1,message_version=message_version+1
+        WHERE id=$1 RETURNING message_version`, id).Scan(&item.Version); err != nil {
+		failure(w, r)
+		return
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO messages(conversation_id,sequence,version,sender_id,client_id,body,body_digest)
+        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
+		id, sequence, item.Version, user.ID, input.ClientID, input.Body, digest(input.Body)).Scan(&item.Created)
 	var constraint *pgconn.PgError
 	if errors.As(err, &constraint) && constraint.Code == "23505" {
 		problem(w, r, 409, "message_conflict", "This client message ID is already in use.")
 		return
 	}
 	if err != nil {
-		failure(w, r)
-		return
-	}
-	if _, err = tx.Exec(ctx, "UPDATE conversations SET next_sequence=next_sequence+1 WHERE id=$1", id); err != nil {
 		failure(w, r)
 		return
 	}
