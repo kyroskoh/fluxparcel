@@ -4,6 +4,8 @@ import { api } from './api'
 export type Capabilities = {
   maxFileSize: number
   partSize: number
+  minPartSize: number
+  maxPartSize: number
   minFileLifetime: number
   fileRetention: number
   snapshotRetention: number

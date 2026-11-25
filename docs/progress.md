@@ -77,3 +77,7 @@ recipient, that the open chat shows them as expired, that non-administrators get
 route, that an administrator restores one snapshot to the exact original bytes and purges the other for good, and
 that the storage administration page renders. The Go integration test checks the `active`, `snapshot` and `purged`
 transitions against real storage. See ADR 0013.
+
+Part-size coverage checks that a requested 16 MiB size is recorded, that out-of-range sizes are refused, and that the
+browser uploads at a server-assigned 5 MiB size with exact bytes. Go tests cover size selection, the 10,000-part
+limit and the memory budget. See ADR 0014.

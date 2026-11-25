@@ -30,7 +30,7 @@ Website: [fluxparcel.xyz](https://fluxparcel.xyz).
   durable offline outbox. Unread counts follow you across devices; read receipts are opt-in and reciprocal.
 - **Edit, delete and moderate.** Senders edit for 24 hours and delete at any time; group owners and admins moderate,
   manage members and hand over ownership.
-- **Large, verified attachments.** Files up to **64 GiB** move in 8 MiB parts. Every part and the whole file are
+- **Large, verified attachments.** Files up to **64 GiB** move in parts (8 MiB by default, configurable). Every part and the whole file are
   checked with SHA-256 before a file is published, and downloads resume with HTTP Range requests.
 - **Uploads that survive interruptions.** Pause, resume, retry and cancel. After a reload, select the same file again
   and only the missing parts are sent; a different file is refused.
@@ -72,6 +72,7 @@ Set these in `.env`. The defaults suit local development.
 |---|---|---|
 | `APP_ORIGIN`, `WEB_PORT` | `http://localhost:8080`, `8080` | Public origin and local port; change them together |
 | `MAX_FILE_SIZE` | `68719476736` (64 GiB) | Largest attachment, in bytes |
+| `TRANSFER_PART_SIZE` | `8388608` (8 MiB) | Part size for new uploads, 5–64 MiB in whole MiB; uploads in progress keep theirs |
 | `FILE_RETENTION` | `720h` | Default and longest file lifetime |
 | `SNAPSHOT_RETENTION` | `720h` | How long expired files stay restorable by administrators; `0` disables snapshots |
 | `ADMIN_EMAILS` | empty | Comma-separated emails whose **verified** accounts administer storage |
@@ -136,6 +137,7 @@ docs/progress.md             Implementation progress against the PRD's P0 requir
   - [0011 Resumable verified attachments](docs/adr/0011-resumable-attachments.md)
   - [0012 Persisted uploads, large files and storage cleanup](docs/adr/0012-persisted-uploads-and-cleanup.md)
   - [0013 File expiry, snapshots and storage lifecycle](docs/adr/0013-file-expiry-and-storage-lifecycle.md)
+  - [0014 Configurable part sizes](docs/adr/0014-configurable-part-sizes.md)
 
 ## Support
 

@@ -7,6 +7,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 ## [Unreleased]
 
 ### Added
+- **Configurable part sizes:** `TRANSFER_PART_SIZE` (5–64 MiB, 8 MiB by default) and an optional per-transfer
+  `partSize` request. Each transfer keeps its own part size, so changing the default never disturbs uploads in
+  progress, and the server raises the size when a file would exceed 10,000 parts.
 - **File expiry:** senders choose how long an attachment stays available (from 1 minute up to `FILE_RETENTION`,
   30 days by default). When it expires it disappears for every member, and open chats update immediately.
 - **Admin snapshots:** expired files become snapshots that only administrators can see, restore with a new expiry, or

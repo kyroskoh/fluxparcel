@@ -24,7 +24,6 @@ import (
 )
 
 const (
-	transferPartSize  = 8 << 20
 	transferRetention = 7 * 24 * time.Hour
 	// staleVerification lets a later completion take over from one that stopped mid-verification.
 	staleVerification = "15 minutes"
@@ -32,11 +31,78 @@ const (
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// partBuffers reuses part-sized buffers, so steady uploads do not allocate 8 MiB per request.
-var partBuffers = sync.Pool{New: func() any {
-	buffer := make([]byte, transferPartSize)
-	return &buffer
-}}
+// Part sizes are chosen per transfer and stored with it, so the default can grow without affecting uploads that
+// already started: each transfer keeps the size it was created with, and clients send parts at the size the
+// server reports for that transfer.
+const (
+	// DefaultPartSize is used for new transfers unless the deployment or the client chooses another size.
+	DefaultPartSize = 8 << 20
+	// MinPartSize is the smallest part S3-compatible storage accepts (except for a file's last part).
+	MinPartSize = 5 << 20
+	// MaxPartSize bounds the memory one part upload may hold while it is verified.
+	MaxPartSize = 64 << 20
+	// maxParts is the multipart limit of S3-compatible storage.
+	maxParts = 10000
+)
+
+var errPartSize = errors.New("part size out of range")
+
+// validPartSize reports whether a configured or requested part size is a whole number of MiB within bounds.
+func validPartSize(size int64) bool {
+	return size >= MinPartSize && size <= MaxPartSize && size%(1<<20) == 0
+}
+
+// choosePartSize returns the part size for a new transfer: the client's request or the deployment default,
+// raised to the next whole MiB when needed to stay within storage's part limit.
+func choosePartSize(fileSize, requested, configured int64) (int64, error) {
+	size := configured
+	if requested != 0 {
+		if !validPartSize(requested) {
+			return 0, errPartSize
+		}
+		size = requested
+	}
+	if needed := (fileSize + maxParts - 1) / maxParts; needed > size {
+		size = (needed + 1<<20 - 1) / (1 << 20) * (1 << 20)
+	}
+	if size > MaxPartSize {
+		return 0, errPartSize
+	}
+	return size, nil
+}
+
+// partBuffers reuses part-sized buffers per part size, so steady uploads do not allocate a buffer per request.
+var partBuffers sync.Map
+
+func partBuffer(size int64) *sync.Pool {
+	pool, _ := partBuffers.LoadOrStore(size, &sync.Pool{New: func() any {
+		buffer := make([]byte, size)
+		return &buffer
+	}})
+	return pool.(*sync.Pool)
+}
+
+// byteBudget bounds the part bytes held in memory across concurrent uploads.
+type byteBudget struct {
+	mu          sync.Mutex
+	used, limit int64
+}
+
+func (b *byteBudget) acquire(size int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used+size > b.limit {
+		return false
+	}
+	b.used += size
+	return true
+}
+
+func (b *byteBudget) release(size int64) {
+	b.mu.Lock()
+	b.used -= size
+	b.mu.Unlock()
+}
 
 type transferView struct {
 	ID             string    `json:"id"`
@@ -139,6 +205,8 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		Size                                         int64
 		// ExpiresInSeconds optionally shortens the published file's lifetime.
 		ExpiresInSeconds int64
+		// PartSize optionally asks for a part size between MinPartSize and MaxPartSize, in whole MiB.
+		PartSize int64
 	}
 	if !readJSON(w, r, &input) {
 		return
@@ -166,6 +234,11 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Size < 1 || input.Size > s.maxFileSize() {
 		problem(w, r, 400, "file_too_large", "Choose a file of up to "+formatGiB(s.maxFileSize())+".")
+		return
+	}
+	partSize, err := choosePartSize(input.Size, input.PartSize, s.partSize())
+	if err != nil {
+		problem(w, r, 400, "invalid_part_size", "Choose a part size of 5–64 MiB in whole MiB.")
 		return
 	}
 	ctx := r.Context()
@@ -223,7 +296,7 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
             object_key,upload_id,expires_at,lifetime_seconds)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()+$11::interval,NULLIF($12,0))
         ON CONFLICT (sender_id,client_id) DO NOTHING RETURNING id`, user.ID, input.ConversationID, input.ClientID,
-		input.Name, mediaType, input.Size, sum, transferPartSize, key, uploadID, transferRetention.String(), input.ExpiresInSeconds).Scan(&id)
+		input.Name, mediaType, input.Size, sum, partSize, key, uploadID, transferRetention.String(), input.ExpiresInSeconds).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A concurrent request created the transfer first; discard this upload and answer with that one.
 		_ = core.AbortMultipartUpload(context.WithoutCancel(ctx), s.Bucket, key, uploadID)
@@ -284,7 +357,7 @@ func transferClosed(w http.ResponseWriter, r *http.Request, t *transferRecord) b
 func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request) {
 	// Drain an unread body, at most one part, before answering. Otherwise an early rejection closes the
 	// connection mid-upload and the proxy reports a gateway error instead of the real response.
-	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, transferPartSize)) }()
+	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, MaxPartSize)) }()
 	number, err := strconv.Atoi(r.PathValue("number"))
 	want := strings.ToLower(r.Header.Get("X-Content-SHA256"))
 	if err != nil || number < 1 || !sha256Hex.MatchString(want) {
@@ -304,17 +377,17 @@ func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, 400, "invalid_part_size", "Send exactly "+strconv.FormatInt(expected, 10)+" bytes for this part.")
 		return
 	}
-	select {
-	case s.partSlots <- struct{}{}:
-		defer func() { <-s.partSlots }()
-	default:
+	if !s.partMemory.acquire(t.PartSize) {
 		w.Header().Set("Retry-After", "2")
 		problem(w, r, 503, "transfers_busy", "Too many uploads are in progress. Try again shortly.")
 		return
 	}
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(2 * time.Minute))
-	pooled := partBuffers.Get().(*[]byte)
-	defer partBuffers.Put(pooled)
+	defer s.partMemory.release(t.PartSize)
+	// Allow two minutes per 8 MiB, so larger parts get proportionally longer on slow connections.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(2 * time.Minute * time.Duration((t.PartSize+DefaultPartSize-1)/DefaultPartSize)))
+	pool := partBuffer(t.PartSize)
+	pooled := pool.Get().(*[]byte)
+	defer pool.Put(pooled)
 	buffer := (*pooled)[:expected]
 	body := http.MaxBytesReader(w, r.Body, expected)
 	if _, err := io.ReadFull(body, buffer); err != nil {

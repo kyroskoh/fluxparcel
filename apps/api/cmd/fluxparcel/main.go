@@ -97,6 +97,13 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 			return fmt.Errorf("RATE_LIMIT_SCALE must be between 1 and 20")
 		}
 	}
+	partSize := int64(foundation.DefaultPartSize)
+	if value := os.Getenv("TRANSFER_PART_SIZE"); value != "" {
+		partSize, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || partSize < foundation.MinPartSize || partSize > foundation.MaxPartSize || partSize%(1<<20) != 0 {
+			return fmt.Errorf("TRANSFER_PART_SIZE must be 5–64 MiB in whole MiB, in bytes")
+		}
+	}
 	maxFileSize := int64(foundation.DefaultMaxFileSize)
 	if value := os.Getenv("MAX_FILE_SIZE"); value != "" {
 		maxFileSize, err = strconv.ParseInt(value, 10, 64)
@@ -118,8 +125,8 @@ func serve(ctx context.Context, db *pgxpool.Pool) error {
 		DB: db, Cache: cache, Objects: objects, Bucket: os.Getenv("S3_BUCKET"), Origin: origin,
 		SecureCookies: public.Scheme == "https", TrustProxy: os.Getenv("TRUST_PROXY") == "true",
 		RateLimitScale: rateLimitScale,
-		MaxFileSize:    maxFileSize,
-		FileRetention:  retention.file, SnapshotRetention: retention.snapshot, AdminEmails: admins,
+		MaxFileSize:    maxFileSize, PartSize: partSize,
+		FileRetention: retention.file, SnapshotRetention: retention.snapshot, AdminEmails: admins,
 		SendVerification: func(ctx context.Context, to, token string) error {
 			dialer := net.Dialer{Timeout: 3 * time.Second}
 			conn, err := dialer.DialContext(ctx, "tcp", smtpAddress)
