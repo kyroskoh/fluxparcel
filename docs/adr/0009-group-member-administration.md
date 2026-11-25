@@ -8,8 +8,9 @@ Any group member can list the group's members and roles. Changes follow fixed ru
 | Remove an admin | Yes | No | No |
 | Remove a member | Yes | Yes | No |
 | Leave the group | No | Yes | Yes |
+| Transfer ownership to another member | Yes | No | No |
 
-The owner's role cannot change, and the owner cannot leave. Ownership transfer is not implemented yet, and deleting the owner's account still deletes the group. Direct chats have no administration endpoints. Non-members, unknown groups and direct chats all get the standard not-found response.
+The owner's role cannot be changed directly, and the owner cannot leave. To leave, the owner first transfers ownership to another member. That member becomes the owner, the previous owner becomes an admin and keeps their open invitations, and `conversations.owner_id` moves to the new owner. Deleting the owner's account still deletes the group, so a transfer also protects the group from the previous owner's account deletion. Direct chats have no administration endpoints. Non-members, unknown groups and direct chats all get the standard not-found response.
 
 Every change runs in one transaction that first locks the conversation row. Invitation redemption takes the same lock, so role changes, removals and joins cannot interleave. Each request body is read before the lock is taken.
 

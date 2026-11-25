@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
+import { retryAuthentication } from './chat-fixtures'
 
 const password = 'test-only password for FluxParcel'
 const mailOrigin = process.env.FLUXPARCEL_MAIL_ORIGIN ?? 'http://localhost:8025'
@@ -58,10 +59,10 @@ test('register, verify, update, revoke another session, and delete', async ({ pa
   await page.getByLabel('Confirm password').fill(password)
   await page.getByRole('button', { name: 'Permanently delete account' }).click()
   await expect(page).toHaveURL(/\/login$/)
-  expect((await request.post('/v1/auth/login', {
+  expect((await retryAuthentication(() => request.post('/v1/auth/login', {
     headers: { Origin: baseURL! },
     data: { email, password },
-  })).status()).toBe(401)
+  }))).status()).toBe(401)
 })
 
 test('same-origin enforcement, rotating credentials and logout', async ({ request, baseURL }) => {
@@ -69,10 +70,10 @@ test('same-origin enforcement, rotating credentials and logout', async ({ reques
   const origin = { Origin: baseURL! }
   expect((await request.post('/v1/auth/register', { headers: { Origin: 'https://elsewhere.example' } })).status()).toBe(403)
   try {
-    const registered = await request.post('/v1/auth/register', {
+    const registered = await retryAuthentication(() => request.post('/v1/auth/register', {
       headers: origin,
       data: { email: username + '@example.test', username, displayName: 'Test Person', password },
-    })
+    }))
     expect(registered.status()).toBe(201)
     const oldCookies = (await request.storageState()).cookies
     expect(oldCookies.every(cookie => cookie.httpOnly && cookie.sameSite === 'Strict')).toBeTruthy()

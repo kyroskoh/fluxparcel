@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
-import { password, register, verifyEmail } from './chat-fixtures'
+import { deleteAccount, password, register, verifyEmail } from './chat-fixtures'
 
 test('group roles gate member administration and removal blocks rejoining', async ({ page, browser, request, baseURL }) => {
   test.setTimeout(60000)
@@ -92,5 +92,56 @@ test('group roles gate member administration and removal blocks rejoining', asyn
   } finally {
     await Promise.all(clients.map(client => client.delete('/v1/account', { headers, data: { password } })))
     await Promise.all([admin.close(), member.close(), outsider.close()])
+  }
+})
+
+test('the owner hands a group to a member and can then leave', async ({ page, browser, request, baseURL }) => {
+  test.setTimeout(60000)
+  const origin = baseURL!
+  const headers = { Origin: origin }
+  const heir = await browser.newContext({ baseURL })
+  let ownerDeleted = false
+  try {
+    const ownerEmail = await register(page.request, origin, 'Departing Owner')
+    await register(heir.request, origin, 'Group Heir')
+    await verifyEmail(page.request, request, origin, ownerEmail)
+    const id = async (client: APIRequestContext) => (await (await client.get('/v1/account')).json()).id as string
+    const [ownerId, heirId] = await Promise.all([id(page.request), id(heir.request)])
+    const group = await (await page.request.post('/v1/conversations', { headers, data: { title: 'Inherited group' } })).json()
+    const invitation = await (await page.request.post('/v1/invitations', { headers, data: { conversationId: group.id } })).json()
+    const token = new URL(invitation.url).hash.slice(1)
+    expect((await heir.request.post('/v1/invitations/redeem', { headers, data: { token } })).status()).toBe(200)
+
+    const members = '/v1/conversations/' + group.id + '/members'
+    const transfer = (client: APIRequestContext, target: string) =>
+      client.post(members + '/' + target + '/ownership', { headers }).then(response => response.status())
+    expect(await transfer(heir.request, heirId)).toBe(403)
+    expect(await transfer(page.request, ownerId)).toBe(409)
+    expect(await transfer(page.request, '00000000-0000-4000-8000-000000000000')).toBe(404)
+
+    await page.goto('/chats/' + group.id)
+    await page.getByRole('button', { name: 'Members' }).click()
+    await expect(page.getByText('Transfer ownership to another member before leaving this group.')).toBeVisible()
+    const heirItem = page.getByRole('list', { name: 'Group members' }).getByRole('listitem').filter({ hasText: 'Group Heir' })
+    await heirItem.getByRole('button', { name: 'Make owner' }).click()
+    await page.getByRole('button', { name: 'Confirm transfer to Group Heir' }).click()
+    await expect(page.getByText('Group Heir now owns this group. You are an admin.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Make owner' })).toHaveCount(0)
+    const roles = (await (await heir.request.get(members)).json()).map((item: { displayName: string; role: string }) => [item.displayName, item.role])
+    expect(roles).toEqual([['Group Heir', 'owner'], ['Departing Owner', 'admin']])
+    expect(await transfer(page.request, heirId)).toBe(403)
+
+    await page.getByRole('button', { name: 'Leave group' }).click()
+    await page.getByRole('button', { name: 'Confirm leaving Inherited group' }).click()
+    await expect(page).toHaveURL(/\/chats$/)
+    // The group now belongs to the heir, so deleting the former owner's account keeps it.
+    expect((await deleteAccount(page.request, origin)).status()).toBe(204)
+    ownerDeleted = true
+    expect((await heir.request.get('/v1/conversations/' + group.id + '/messages')).status()).toBe(200)
+    expect((await (await heir.request.get(members)).json()).map((item: { role: string }) => item.role)).toEqual(['owner'])
+  } finally {
+    await Promise.all([heir.request, ...(ownerDeleted ? [] : [page.request])]
+      .map(client => client.delete('/v1/account', { headers, data: { password } })))
+    await heir.close()
   }
 })
