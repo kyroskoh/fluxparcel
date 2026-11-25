@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import QRCode from 'qrcode'
-import { password, register, verifyEmail } from './chat-fixtures'
+import { deleteAccount, login, password, register, verifyEmail } from './chat-fixtures'
 import { checkOfflineOutbox, checkOutboxSignOut } from './outbox-fixtures'
 
 test('contact approval opens exactly one private direct conversation', async ({ page, browser, request, baseURL }) => {
@@ -100,9 +100,7 @@ test('contact approval opens exactly one private direct conversation', async ({ 
     const read = '/v1/conversations/' + id + '/read'
     expect((await outsider.request.post(read, { headers, data: { sequence: 1 } })).status()).toBe(404)
     expect((await recipient.request.post(read, { headers, data: { sequence: 9999 } })).status()).toBe(404)
-    expect((await secondDevice.request.post('/v1/auth/login', {
-      headers, data: { email: recipientEmail, password },
-    })).status()).toBe(200)
+    expect((await login(secondDevice.request, origin, recipientEmail)).status()).toBe(200)
     const unreadCount = async () => {
       const conversations = await (await secondDevice.request.get('/v1/conversations')).json()
       return conversations[0]?.unread
@@ -134,14 +132,14 @@ test('contact approval opens exactly one private direct conversation', async ({ 
       return (await retry.json()).sequence
     }).toBe(4)
     await checkOutboxSignOut(page, messages)
-    expect((await page.request.post('/v1/auth/login', { headers, data: { email: senderEmail, password } })).status()).toBe(200)
+    expect((await login(page.request, origin, senderEmail)).status()).toBe(200)
     const declinable = await (await page.request.post('/v1/contact-invitations', { headers, data: {} })).json()
     const declineToken = new URL(declinable.url).hash.slice('#contact_'.length)
     expect((await outsider.request.post('/v1/contact-invitations/redeem', { headers, data: { token: declineToken } })).status()).toBe(204)
     const [outgoing] = await (await outsider.request.get('/v1/contact-requests')).json()
     expect((await page.request.post('/v1/contact-requests/' + outgoing.id + '/decision', { headers, data: { decision: 'decline' } })).status()).toBe(204)
     expect(await (await outsider.request.get('/v1/conversations')).json()).toEqual([])
-    expect((await recipient.request.delete('/v1/account', { headers, data: { password } })).status()).toBe(204)
+    expect((await deleteAccount(recipient.request, origin)).status()).toBe(204)
     recipientDeleted = true
     expect((await page.request.get(messages)).status()).toBe(404)
   } finally {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type WebSocket } from '@playwright/test'
 import QRCode from 'qrcode'
-import { password, register, verifyEmail } from './chat-fixtures'
+import { login, password, register, verifyEmail } from './chat-fixtures'
 
 test('private group invitations, atomic redemption and durable message synchronization', async ({ browser, page, request, baseURL }) => {
   const origin = baseURL!
@@ -134,7 +134,7 @@ test('private group invitations, atomic redemption and durable message synchroni
     await expect.poll(() => activeSocket.isClosed()).toBe(true)
     await expect(recipient.getByText('This conversation is unavailable.')).toBeVisible()
     await expect(recipient.getByText('Message after session revocation')).toHaveCount(0)
-    expect((await member.request.post('/v1/auth/login', { headers, data: { email: memberEmail, password } })).status()).toBe(200)
+    expect((await login(member.request, origin, memberEmail)).status()).toBe(200)
   } finally {
     await Promise.all([page.request, member.request, outsider.request].map(client =>
       client.delete('/v1/account', { headers, data: { password } }),
