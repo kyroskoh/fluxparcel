@@ -1,57 +1,147 @@
 # FluxParcel
 
-**Connect. Transfer. Discover.**
+[![Foundation](https://github.com/kyroskoh/fluxparcel/actions/workflows/foundation.yml/badge.svg)](https://github.com/kyroskoh/fluxparcel/actions/workflows/foundation.yml)
+[![Web](https://img.shields.io/badge/web-React%20%2B%20TypeScript-3178C6?logo=typescript&logoColor=white)](apps/web)
+[![API](https://img.shields.io/badge/API-Go-00ADD8?logo=go&logoColor=white)](apps/api)
+[![Storage](https://img.shields.io/badge/storage-PostgreSQL%20%7C%20Redis%20%7C%20S3-4169E1)](compose.yaml)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](compose.yaml)
 
-[FluxParcel.xyz](https://fluxparcel.xyz)
+**Status:** Pre-release, Phase 3 (transfers) · **Author:** [Kyros Koh](https://github.com/kyroskoh) · **Repository:** [kyroskoh/fluxparcel](https://github.com/kyroskoh/fluxparcel) · **Changelog:** [CHANGELOG.md](./CHANGELOG.md)
 
-FluxParcel is a self-hosted browser workspace for messaging and file sharing. The app supports accounts, private group and direct text chat, with QR invitations and issuer approval for new contacts. The roadmap tracks file transfers, compression and search.
+**Connect. Transfer. Discover.** FluxParcel is a self-hosted browser workspace for **messaging** and
+**large-file sharing**, built as a responsive web app and installable PWA for desktop and mobile.
+Website: [fluxparcel.xyz](https://fluxparcel.xyz).
 
-## Local development
+| Area | Status |
+|---|---|
+| Accounts, device sessions, email verification | ✅ |
+| Private groups and direct chats with QR invitations | ✅ |
+| Live sync, offline outbox, unread counts, read receipts | ✅ |
+| Message edits and deletion, member administration | ✅ |
+| Verified, resumable attachments up to 64 GiB | ✅ |
+| File expiry, admin snapshots and storage lifecycle | ✅ |
+| Compression, archives and universal search | 🗓️ Planned ([ROADMAP.md](ROADMAP.md)) |
 
-Install Docker with the Compose v2 plugin. Copy the environment template, then set three unique random values using hex characters so credentials can be safely interpolated in connection URLs.
+## Features
 
-```sh
-cp .env.example .env
-openssl rand -hex 24
-openssl rand -hex 24
-openssl rand -hex 24
-docker compose up --build --wait
-```
+- **Private chat.** Groups with owner, admin and member roles, and direct chats that need the issuer's approval.
+  Invitations are expiring QR codes or links that are previewed before anyone joins.
+- **Works through bad connections.** Messages sync live over WebSockets, catch up after reconnecting, and wait in a
+  durable offline outbox. Unread counts follow you across devices; read receipts are opt-in and reciprocal.
+- **Edit, delete and moderate.** Senders edit for 24 hours and delete at any time; group owners and admins moderate,
+  manage members and hand over ownership.
+- **Large, verified attachments.** Files up to **64 GiB** move in 8 MiB parts. Every part and the whole file are
+  checked with SHA-256 before a file is published, and downloads resume with HTTP Range requests.
+- **Uploads that survive interruptions.** Pause, resume, retry and cancel. After a reload, select the same file again
+  and only the missing parts are sent; a different file is refused.
+- **File expiry.** Senders can choose how long a file stays available. When it expires it disappears for everyone in
+  the chat.
+- **Storage lifecycle and administration.** Expired files become administrator-only snapshots that can be restored
+  or purged, then are purged automatically. A worker removes abandoned uploads, deleted files and orphaned objects.
+- **Self-hosted and private by default.** Storage stays on the private network, every request is authorized against
+  current membership, and secrets and file contents are never logged.
 
-Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. Attachments can be up to 64 GiB; set `MAX_FILE_SIZE` in bytes to lower the limit. The worker cleans up expired and abandoned uploads every `CLEANUP_INTERVAL` (default `1m`). The stack uses development-only HTTP settings.
+## Quick start
 
-`docker compose stop` stops services while retaining their data. `docker compose run --rm --no-deps migrate` reruns the idempotent migration command against a running stack. When serving an HTTPS deployment, terminate TLS at a trusted edge and configure the API with the public HTTPS origin (for example, `APP_ORIGIN=https://fluxparcel.xyz`), private dependencies and a trusted SMTP relay. Leave proxy IP trust disabled unless the API is reachable exclusively through a proxy that overwrites `X-Real-IP`.
+1. Install Docker with the Compose v2 plugin.
+2. Create `.env` from the template and set three unique random hex values:
+
+   ```bash
+   cp .env.example .env
+   openssl rand -hex 24   # POSTGRES_PASSWORD
+   openssl rand -hex 24   # S3_ACCESS_KEY
+   openssl rand -hex 24   # S3_SECRET_KEY
+   ```
+
+3. Start the stack:
+
+   ```bash
+   docker compose up --build --wait
+   ```
+
+4. Open [FluxParcel](http://localhost:8080) and read local verification emails in [Mailpit](http://localhost:8025).
+
+`docker compose stop` keeps your data. `docker compose run --rm --no-deps migrate` reruns the idempotent migrations
+against a running stack.
+
+## Configuration
+
+Set these in `.env`. The defaults suit local development.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `APP_ORIGIN`, `WEB_PORT` | `http://localhost:8080`, `8080` | Public origin and local port; change them together |
+| `MAX_FILE_SIZE` | `68719476736` (64 GiB) | Largest attachment, in bytes |
+| `FILE_RETENTION` | `720h` | Default and longest file lifetime |
+| `SNAPSHOT_RETENTION` | `720h` | How long expired files stay restorable by administrators; `0` disables snapshots |
+| `ADMIN_EMAILS` | empty | Comma-separated emails whose **verified** accounts administer storage |
+| `CLEANUP_INTERVAL` | `1m` | How often the worker advances the storage lifecycle |
+| `RATE_LIMIT_SCALE` | `1` | Multiplies per-address rate limits; for disposable test stacks only |
+
+The web and mail interfaces bind to loopback; PostgreSQL, Redis and S3 stay on the Compose network. The stack uses
+development-only HTTP settings. For an HTTPS deployment, terminate TLS at a trusted edge, set the public HTTPS origin
+(for example `APP_ORIGIN=https://fluxparcel.xyz`), use private dependencies and a trusted SMTP relay, and leave proxy
+IP trust off unless the API is reachable only through a proxy that overwrites `X-Real-IP`.
 
 ## Verification
 
-With Node.js 24, Go 1.25 or later, and the Compose stack running:
+With Node.js 24, Go 1.25 or later and the Compose stack running:
 
-```sh
+```bash
 npm ci
-npm run lint
-npm run typecheck
-npm run build
+npm run lint && npm run typecheck && npm run build
 (cd apps/api && go test -race ./... && go vet ./...)
 npx playwright install chromium
 npm run test:e2e
 ```
 
-Tests create disposable accounts and use synthetic mail. Running the whole suite more than once a minute can exceed the per-address rate limits. For a disposable stack, start Compose with `RATE_LIMIT_SCALE=5` and `CLEANUP_INTERVAL=2s` as CI does. Leave them unset elsewhere. CI also adds `compose.test.yaml`, which publishes PostgreSQL and S3 on loopback for the storage integration test in `apps/api`; never use it for a shared or production stack. GitHub Actions runs the same foundation checks and publishes the API and web container images to GHCR on verified pushes to `main`.
+Tests create disposable accounts and use synthetic mail. For a disposable stack, start Compose as CI does, with
+`RATE_LIMIT_SCALE=5`, `CLEANUP_INTERVAL=2s`, `ADMIN_EMAILS=admin-desktop@example.test,admin-mobile@example.test` and
+`COMPOSE_FILE=compose.yaml:compose.test.yaml`. The test override publishes PostgreSQL and S3 on loopback for the
+storage integration test in `apps/api`; never use it for a shared or production stack. GitHub Actions runs the same
+checks and publishes the API and web images to GHCR on verified pushes to `main`.
 
-- [Product requirements](PRD.md)
-- [Roadmap](ROADMAP.md)
-- [Implementation progress](docs/progress.md)
-- [Foundation architecture](docs/adr/0001-foundation.md)
-- [Private group chat architecture](docs/adr/0002-private-group-chat.md)
-- [Contact approval architecture](docs/adr/0003-contact-approval.md)
-- [Invitation scanning architecture](docs/adr/0004-invitation-scanning.md)
-- [Live message synchronization architecture](docs/adr/0005-live-message-sync.md)
-- [Offline text outbox architecture](docs/adr/0006-offline-text-outbox.md)
-- [Private read cursor architecture](docs/adr/0007-private-read-cursors.md)
-- [Shared read receipt architecture](docs/adr/0008-shared-read-receipts.md)
-- [Group member administration](docs/adr/0009-group-member-administration.md)
-- [Message edits and deletion](docs/adr/0010-message-edits-and-deletion.md)
-- [Resumable verified attachments](docs/adr/0011-resumable-attachments.md)
-- [Persisted uploads, large files and storage cleanup](docs/adr/0012-persisted-uploads-and-cleanup.md)
-- [Security](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+## Repository layout
+
+```
+apps/api/                    Go API, worker and migrations (cmd/fluxparcel, internal/foundation, migrations)
+apps/web/                    React + TypeScript web app and PWA (src) and Playwright tests (e2e)
+deploy/                      API and web Dockerfiles and the nginx configuration
+compose.yaml                 Local stack: PostgreSQL, Redis, S3 (RustFS), Mailpit, API, worker and web
+compose.test.yaml            Test-only override that publishes PostgreSQL and S3 on loopback
+docs/adr/                    Architecture decision records
+docs/progress.md             Implementation progress against the PRD's P0 requirements
+```
+
+## Documentation
+
+- [PRD.md](PRD.md): product requirements and acceptance criteria (start here before contributing)
+- [ROADMAP.md](ROADMAP.md): delivery phases
+- [docs/progress.md](docs/progress.md): implementation progress and open release gates
+- [CHANGELOG.md](CHANGELOG.md): notable changes
+- [SECURITY.md](SECURITY.md): reporting vulnerabilities and hardening advice
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute
+- [AGENTS.md](AGENTS.md): conventions for automated contributors
+- Architecture decisions:
+  - [0001 Foundation](docs/adr/0001-foundation.md)
+  - [0002 Private group chat](docs/adr/0002-private-group-chat.md)
+  - [0003 Contact approval](docs/adr/0003-contact-approval.md)
+  - [0004 Invitation scanning](docs/adr/0004-invitation-scanning.md)
+  - [0005 Live message synchronization](docs/adr/0005-live-message-sync.md)
+  - [0006 Offline text outbox](docs/adr/0006-offline-text-outbox.md)
+  - [0007 Private read cursors](docs/adr/0007-private-read-cursors.md)
+  - [0008 Shared read receipts](docs/adr/0008-shared-read-receipts.md)
+  - [0009 Group member administration](docs/adr/0009-group-member-administration.md)
+  - [0010 Message edits and deletion](docs/adr/0010-message-edits-and-deletion.md)
+  - [0011 Resumable verified attachments](docs/adr/0011-resumable-attachments.md)
+  - [0012 Persisted uploads, large files and storage cleanup](docs/adr/0012-persisted-uploads-and-cleanup.md)
+  - [0013 File expiry, snapshots and storage lifecycle](docs/adr/0013-file-expiry-and-storage-lifecycle.md)
+
+## Support
+
+- 🐛 Issues: [GitHub Issues](https://github.com/kyroskoh/fluxparcel/issues)
+- 🔒 Security: see [SECURITY.md](SECURITY.md)
+
+---
+
+Made with ❤️ by [Kyros Koh](https://github.com/kyroskoh)
