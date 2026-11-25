@@ -107,13 +107,13 @@ test('a paused upload stays paused across reloads and cancelling it lets cleanup
   }
 })
 
-test('large files up to the configured limit are accepted and split into parts', async ({ page, browser, request, baseURL }) => {
+test('files up to the 64 GiB default limit are accepted and split into parts', async ({ page, browser, request, baseURL }) => {
   const origin = baseURL!
   const headers = { Origin: origin }
   const { member, conversationId } = await setup(page, browser, request, origin, 'Large limits')
   try {
     const capabilities = await (await page.request.get('/v1/capabilities')).json()
-    expect(capabilities).toMatchObject({ transfers: true, maxFileSize: 8 * 1024 ** 3, partSize })
+    expect(capabilities).toMatchObject({ transfers: true, maxFileSize: 64 * 1024 ** 3, partSize })
     const create = (size: number) => page.request.post('/v1/transfers', {
       headers, data: { conversationId, clientId: randomUUID(), name: 'video.mkv', size, sha256: 'a'.repeat(64) },
     })
@@ -121,12 +121,14 @@ test('large files up to the configured limit are accepted and split into parts',
     expect(sixGiB.status()).toBe(201)
     const transfer = await sixGiB.json()
     expect(transfer).toMatchObject({ partCount: 768, partSize, size: 6 * 1024 ** 3 })
-    const atLimit = await create(8 * 1024 ** 3)
+    const atLimit = await create(64 * 1024 ** 3)
     expect(atLimit.status()).toBe(201)
-    const tooLarge = await create(8 * 1024 ** 3 + 1)
+    const largest = await atLimit.json()
+    expect(largest).toMatchObject({ partCount: 8192, size: 64 * 1024 ** 3 })
+    const tooLarge = await create(64 * 1024 ** 3 + 1)
     expect(tooLarge.status()).toBe(400)
-    expect((await tooLarge.json()).message).toContain('8 GiB')
-    for (const id of [transfer.id, (await atLimit.json()).id]) {
+    expect((await tooLarge.json()).message).toContain('64 GiB')
+    for (const id of [transfer.id, largest.id]) {
       expect((await page.request.delete('/v1/transfers/' + id, { headers })).status()).toBe(204)
     }
   } finally {

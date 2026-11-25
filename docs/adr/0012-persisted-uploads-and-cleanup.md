@@ -2,9 +2,9 @@
 
 ## Large files
 
-Attachments can be up to 8 GiB by default. Deployments set `MAX_FILE_SIZE` in bytes, from 1 MiB to 64 GiB. The PRD's 2 GiB default is raised because the parts design keeps every stage bounded:
+Attachments can be up to 64 GiB by default. Deployments can lower the limit with `MAX_FILE_SIZE` in bytes, down to 1 MiB. The PRD's 2 GiB default is raised because the parts design keeps every stage bounded:
 
-- Parts stay at 8 MiB, so an 8 GiB file has 1,024 parts and the 64 GiB ceiling stays within storage's 10,000-part limit.
+- Parts stay at 8 MiB, so a 64 GiB file has 8,192 parts, within storage's 10,000-part limit.
 - `GET /v1/capabilities` reports `maxFileSize` and `partSize`, so the browser rejects an oversized file before hashing it.
 - Downloads use a rolling two-minute idle deadline instead of a fixed total duration.
 

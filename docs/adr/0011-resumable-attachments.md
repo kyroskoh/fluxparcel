@@ -11,7 +11,7 @@ The PRD describes short-lived signed storage URLs. This slice sends parts and do
 - Uploads: three files at a time per tab and two parts per file. Transient failures back off exponentially with jitter, honor `Retry-After` and stop after five attempts. Pause aborts in-flight parts and is never resumed automatically. Resume asks the server which parts it holds and sends only the missing ones. Network loss parks uploads until the browser reports it is online. The tab warns before closing during active uploads.
 - Completion takes over a verification stalled for 15 minutes. Concurrent completions answer `409 transfer_verifying` with `Retry-After`. Publication locks the conversation like a text send and fails if the sender lost membership during verification.
 - Downloads: `GET /v1/files/{id}/content` streams with Range support. The quoted SHA-256 is the strong ETag, so `If-Range` never mixes bytes from another object. Responses are `application/octet-stream` attachments with a sandbox content security policy. Deleting the message, losing membership or the file expiring denies access.
-- Files are kept for 30 days and unfinished uploads for 7 days. ADR 0012 raises the default size limit to 8 GiB.
+- Files are kept for 30 days and unfinished uploads for 7 days. ADR 0012 raises the default size limit to 64 GiB.
 
 ## Open release gates
 

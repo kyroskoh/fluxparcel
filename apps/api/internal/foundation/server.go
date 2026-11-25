@@ -39,7 +39,7 @@ type Server struct {
 type requestIDKey struct{}
 
 // DefaultMaxFileSize is the largest attachment accepted unless the deployment configures another limit.
-const DefaultMaxFileSize = 8 << 30
+const DefaultMaxFileSize = 64 << 30
 
 func (s *Server) maxFileSize() int64 {
 	if s.MaxFileSize > 0 {

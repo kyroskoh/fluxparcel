@@ -36,7 +36,7 @@ type Upload = {
 const maxActiveUploads = 3
 const partsPerUpload = 2
 const maxAttempts = 5
-const defaultMaxFileSize = 8 * 1024 ** 3
+const defaultMaxFileSize = 64 * 1024 ** 3
 const running: UploadState[] = ['preparing', 'uploading', 'retrying', 'verifying']
 const terminal: UploadState[] = ['completed', 'cancelled']
 const lockName = (id: string) => 'fluxparcel-upload:' + id

@@ -18,7 +18,7 @@ openssl rand -hex 24
 docker compose up --build --wait
 ```
 
-Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. Attachments can be up to 8 GiB; set `MAX_FILE_SIZE` in bytes to change the limit. The worker cleans up expired and abandoned uploads every `CLEANUP_INTERVAL` (default `1m`). The stack uses development-only HTTP settings.
+Open [FluxParcel](http://localhost:8080) and use [Mailpit](http://localhost:8025) to read local verification emails. If you change the frontend port, set `WEB_PORT` and `APP_ORIGIN` together. The web and mail interfaces bind to loopback. PostgreSQL, Redis and S3 are on the Compose network. Attachments can be up to 64 GiB; set `MAX_FILE_SIZE` in bytes to lower the limit. The worker cleans up expired and abandoned uploads every `CLEANUP_INTERVAL` (default `1m`). The stack uses development-only HTTP settings.
 
 `docker compose stop` stops services while retaining their data. `docker compose run --rm --no-deps migrate` reruns the idempotent migration command against a running stack. When serving an HTTPS deployment, terminate TLS at a trusted edge and configure the API with the public HTTPS origin (for example, `APP_ORIGIN=https://fluxparcel.xyz`), private dependencies and a trusted SMTP relay. Leave proxy IP trust disabled unless the API is reachable exclusively through a proxy that overwrites `X-Real-IP`.
 

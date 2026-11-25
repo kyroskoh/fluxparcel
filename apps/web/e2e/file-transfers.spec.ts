@@ -37,7 +37,7 @@ test('uploads verify every part and the whole file before members can download i
     const parts = [data.subarray(0, partSize), data.subarray(partSize)]
 
     expect((await create(outsider.request)).status()).toBe(404)
-    expect((await create(page.request, { size: 8 * 1024 ** 3 + 1 })).status()).toBe(400)
+    expect((await create(page.request, { size: 64 * 1024 ** 3 + 1 })).status()).toBe(400)
     expect((await create(page.request, { name: '../escape.bin' })).status()).toBe(400)
     const clientId = randomUUID()
     const created = await create(page.request, { clientId })
