@@ -1,5 +1,7 @@
 import { useOutbox } from './use-outbox'
 import { useTransfers } from './transfers'
+import { useDownloads } from './downloads'
+import { purgeDownloads } from './download-store'
 import { TransfersPage } from './uploads'
 import { StorageAdmin } from './admin'
 import { purgeOutbox } from './outbox'
@@ -206,6 +208,7 @@ function ReadReceiptSetting({ account, onAccount, onNotice }: {
 function Workspace({ account, onAccount, signOut }: { account: Account; onAccount: (user: Account) => void; signOut: () => void }) {
   const outbox = useOutbox(account.id)
   const transfers = useTransfers(account.id)
+  const downloads = useDownloads(account.id)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [dark, setDark] = useState(() => localStorage.getItem('fluxparcel-theme') === 'dark'
     || (!localStorage.getItem('fluxparcel-theme') && matchMedia('(prefers-color-scheme: dark)').matches))
@@ -249,10 +252,10 @@ function Workspace({ account, onAccount, signOut }: { account: Account; onAccoun
       </nav>
       <main id="content" tabIndex={-1}>
         <Routes>
-          <Route path="/chats" element={<Chats account={account} outbox={outbox} transfers={transfers} />} />
-          <Route path="/chats/:id" element={<Chats account={account} outbox={outbox} transfers={transfers} />} />
+          <Route path="/chats" element={<Chats account={account} outbox={outbox} transfers={transfers} downloads={downloads} />} />
+          <Route path="/chats/:id" element={<Chats account={account} outbox={outbox} transfers={transfers} downloads={downloads} />} />
           <Route path="/contacts" element={<Contacts account={account} />} />
-          <Route path="/transfers" element={<TransfersPage transfers={transfers} />} />
+          <Route path="/transfers" element={<TransfersPage transfers={transfers} downloads={downloads} />} />
           <Route path="/settings" element={<Settings account={account} onAccount={onAccount} signOut={signOut} />} />
           {account.admin && <Route path="/admin/storage" element={<StorageAdmin />} />}
           <Route path="*" element={<Navigate to="/chats" replace />} />
@@ -309,6 +312,10 @@ function App() {
         setError('Signed out. The local message queue could not be cleared.')
       })
       // Unfinished uploads stay on the server until they expire; this device forgets them.
+      // Partial and verified downloads kept in this browser are deleted too.
+      void purgeDownloads(account.id).catch(() => {
+        setError('Signed out. Downloaded files kept in this browser could not be removed.')
+      })
       void purgeUploads(account.id).catch(() => {
         setError('Signed out. The local upload list could not be cleared.')
       })

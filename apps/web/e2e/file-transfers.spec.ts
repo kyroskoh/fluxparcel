@@ -156,7 +156,7 @@ test('a paused upload resends only unacknowledged parts and the recipient gets t
     const recipient = await member.newPage()
     await recipient.goto('/chats/' + conversationId)
     await expect(recipient.getByText('archive.bin')).toBeVisible({ timeout: 30000 })
-    await expect(recipient.getByRole('link', { name: 'Download' })).toBeVisible()
+    await expect(recipient.getByRole('button', { name: 'Download', exact: true })).toBeVisible()
     const resent = requested.slice(sentWhilePaused)
     for (const number of beforePause) expect(resent).not.toContain(number)
     expect([...acknowledged].sort()).toEqual([1, 2, 3])
@@ -164,7 +164,7 @@ test('a paused upload resends only unacknowledged parts and the recipient gets t
     const [message] = await (await member.request.get('/v1/conversations/' + conversationId + '/messages')).json()
     expect(message.file.sha256).toBe(sha256(data))
     expect(sha256(await (await member.request.get('/v1/files/' + message.file.id + '/content')).body())).toBe(sha256(data))
-    await expect(page.getByRole('link', { name: 'Download' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Download', exact: true })).toBeVisible()
     await expect(item).toHaveCount(0)
   } finally {
     await Promise.all([page.request, member.request].map(client => deleteAccount(client, origin)))

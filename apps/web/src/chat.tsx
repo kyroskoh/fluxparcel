@@ -7,7 +7,8 @@ import { InviteScanner } from './invite-scanner'
 import { invitePath } from './invite-link'
 import { api, ApiError, errorMessage, type Account } from './api'
 import { formatBytes, type Transfers } from './transfers'
-import { UploadItem } from './uploads'
+import { DownloadItem, UploadItem } from './uploads'
+import type { Downloads } from './downloads'
 import { formatDuration, useCapabilities } from './capabilities'
 
 type Conversation = { id: string; title: string; role: 'owner' | 'admin' | 'member'; kind: 'group' | 'direct'; unread: number }
@@ -24,7 +25,7 @@ type Receipts = { sharing: boolean; readers: { userId: string; displayName: stri
 type Member = { userId: string; displayName: string; role: Conversation['role'] }
 type Invite = { id: string; expiresAt: string; maxUses: number; usedCount: number }
 
-export function Chats({ account, outbox, transfers }: { account: Account; outbox: Outbox; transfers: Transfers }) {
+export function Chats({ account, outbox, transfers, downloads }: { account: Account; outbox: Outbox; transfers: Transfers; downloads: Downloads }) {
   const { id } = useParams()
   const [groups, setGroups] = useState<Conversation[] | null>(null)
   const [listRevision, setListRevision] = useState(0)
@@ -115,7 +116,7 @@ export function Chats({ account, outbox, transfers }: { account: Account; outbox
     </aside>
     <section className={'conversation ' + (group ? 'open-conversation' : '')} aria-label="Conversation">
       {id && <Link className="mobile-back" to="/chats"><ArrowLeft size={18} aria-hidden /> Back to chats</Link>}
-      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} transfers={transfers} onRead={onRead} /> : <div className="empty-conversation">
+      {group ? <TextChat key={group.id} group={group} account={account} outbox={outbox} transfers={transfers} downloads={downloads} onRead={onRead} /> : <div className="empty-conversation">
         <div className="conversation-icon"><MessageCircle size={43} strokeWidth={1.5} aria-hidden /></div>
         <h2>{id ? (groups === null && !error ? 'Loading conversation…' : 'Conversation unavailable') : 'No conversation selected'}</h2>
         {id && <Link to="/chats" className="secondary">Open chats</Link>}
@@ -130,8 +131,8 @@ function markerInView(marker: HTMLElement, list: HTMLElement) {
   return bounds.height > 0 && viewport.height > 0 && bounds.top >= Math.max(0, viewport.top) && bounds.bottom <= Math.min(window.innerHeight, viewport.bottom)
 }
 
-function TextChat({ group, account, outbox, transfers, onRead }: {
-  group: Conversation; account: Account; outbox: Outbox; transfers: Transfers; onRead: () => void
+function TextChat({ group, account, outbox, transfers, downloads, onRead }: {
+  group: Conversation; account: Account; outbox: Outbox; transfers: Transfers; downloads: Downloads; onRead: () => void
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
@@ -444,7 +445,15 @@ function TextChat({ group, account, outbox, transfers, onRead }: {
                     ? 'Expires ' + new Date(message.file.expiresAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + ' · Not scanned for malware'
                     : 'File expired'}</small>
                 </div>
-                {fileAvailable(message.file) && <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>Download</a>}
+                {fileAvailable(message.file) && !downloads.jobs.some(job => job.fileId === message.file!.id) && <div className="chat-actions">
+                  {downloads.supported && <button className="secondary" type="button" onClick={() => downloads.add(group.id, message.file!)}>Download</button>}
+                  <a className="secondary" href={'/v1/files/' + message.file.id + '/content'} download={message.file.name}>
+                    {downloads.supported ? 'Browser download' : 'Download'}</a>
+                </div>}
+                {(() => {
+                  const job = downloads.jobs.find(item => item.fileId === message.file!.id)
+                  return job && <div className="attachment-download"><DownloadItem job={job} downloads={downloads} /></div>
+                })()}
               </div>}
             </>}
           <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>

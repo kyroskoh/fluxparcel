@@ -63,7 +63,7 @@ test('expired files disappear for every member and administrators can restore or
     const recipient = await member.newPage()
     await recipient.goto('/chats/' + group.id)
     await expect(recipient.getByText(/^.*Expires /)).toHaveCount(2)
-    await expect(recipient.getByRole('link', { name: 'Download' })).toHaveCount(2)
+    await expect(recipient.getByRole('button', { name: 'Download', exact: true })).toHaveCount(2)
 
     // The worker moves expired files to admin-only snapshots and tells open chats.
     await expect.poll(async () => {
@@ -71,7 +71,7 @@ test('expired files disappear for every member and administrators can restore or
       return messages.filter((message: { file?: { available: boolean } }) => message.file && !message.file.available).length
     }, { timeout: 120000, intervals: [2000] }).toBe(2)
     await expect(recipient.getByText('File expired', { exact: false })).toHaveCount(2)
-    await expect(recipient.getByRole('link', { name: 'Download' })).toHaveCount(0)
+    await expect(recipient.getByRole('button', { name: 'Download', exact: true })).toHaveCount(0)
     for (const client of [member.request, page.request]) {
       expect((await client.get(content(restoredId))).status()).toBe(404)
       expect((await client.get(content(purgedId))).status()).toBe(404)
@@ -92,7 +92,7 @@ test('expired files disappear for every member and administrators can restore or
     const back = await member.request.get(content(restoredId))
     expect(back.status()).toBe(200)
     expect(sha256(await back.body())).toBe(sha256(restored))
-    await expect(recipient.getByRole('link', { name: 'Download' })).toHaveCount(1)
+    await expect(recipient.getByRole('button', { name: 'Download', exact: true })).toHaveCount(1)
 
     expect((await admin.request.delete('/v1/admin/snapshots/' + purgedId, { headers })).status()).toBe(204)
     expect((await admin.request.post('/v1/admin/snapshots/' + purgedId + '/restore', { headers, data: {} })).status()).toBe(404)
