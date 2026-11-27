@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api, ApiError } from './api'
 import {
-  appDownloadsSupported, downloadChannel, loadDownloads, partialFile, removeDownload, removePartial, saveDownload,
+  appDownloadsSupported, downloadChannel, loadDownloads, partialFile, removeDownload, removePartial, saveDownload, sweepPartials,
   type DownloadRecord,
 } from './download-store'
 import {
@@ -27,6 +27,7 @@ export type DownloadJob = {
   priority: Priority
   // Lower runs first; see rank in transfer-policy.
   rank: number
+  createdAt: number
   // Why the network policy is holding this download, if it is.
   block?: NetworkBlock
 }
@@ -245,7 +246,7 @@ export class DownloadManager {
   private blankJob(record: DownloadRecord): DownloadJob {
     return {
       fileId: record.fileId, conversationId: record.conversationId, name: record.name, size: record.size, state: 'queued',
-      committedBytes: 0, receivedBytes: 0, error: '', restartRequired: false, priority: 'normal', rank: 0,
+      committedBytes: 0, receivedBytes: 0, error: '', restartRequired: false, priority: 'normal', rank: 0, createdAt: 0,
     }
   }
 
@@ -283,8 +284,9 @@ export class DownloadManager {
     this.downloads.delete(download.record.fileId)
     this.rememberPause(download.record.fileId, false)
     this.emit()
-    await removePartial(this.accountId, download.record.fileId)
+    // The record goes first: if the page closes before the bytes are removed, restore sweeps the orphaned file.
     await removeDownload(this.accountId, download.record.fileId).catch(() => undefined)
+    await removePartial(this.accountId, download.record.fileId)
     this.channel?.postMessage('changed')
     this.pump()
   }
@@ -323,6 +325,7 @@ export class DownloadManager {
     }
     const paused = this.pausedIds()
     const known = new Set(records.map(record => record.fileId))
+    await sweepPartials(this.accountId, fileId => known.has(fileId) || held.has(lockName(fileId)) || Boolean(this.downloads.get(fileId)?.controller))
     for (const [fileId, download] of this.downloads) {
       if (!known.has(fileId) && !download.controller) this.downloads.delete(fileId)
     }
@@ -377,7 +380,7 @@ export class DownloadManager {
       supported: this.supported,
       jobs: [...this.downloads.values()].map(download => {
         const { priority, queuedAt } = this.ordering(download)
-        return { ...download.job, priority, rank: rank(priority, queuedAt) }
+        return { ...download.job, priority, rank: rank(priority, queuedAt), createdAt: download.record.createdAt }
       }),
     }
     for (const listener of this.listeners) listener()
@@ -412,6 +415,7 @@ export class DownloadManager {
     try {
       if (navigator.locks) {
         await navigator.locks.request(lockName(download.record.fileId), { ifAvailable: true }, async lock => {
+          if (controller.signal.aborted) return
           if (!lock) {
             this.update(download, { state: 'elsewhere' })
             return
@@ -455,6 +459,8 @@ export class DownloadManager {
           this.update(download, { state: 'downloading' })
         }
       }
+      // A pause or cancel that raced with the last bytes still wins.
+      if (signal.aborted) return
       if (sha256 !== record.sha256) {
         await removePartial(this.accountId, record.fileId)
         this.update(download, { state: 'failed', committedBytes: 0, receivedBytes: 0, error: 'The downloaded file did not match its checksum and was discarded. Download it again.' })
@@ -485,6 +491,8 @@ export class DownloadManager {
   // attempt runs one download attempt in a worker and resolves with the SHA-256 of the complete local file.
   private attempt(download: Download, signal: AbortSignal) {
     const record = download.record
+    // A pause can land while the lock or storage estimate is pending; an aborted signal never fires its event again.
+    if (signal.aborted) return Promise.reject(signal.reason)
     return new Promise<string>((resolve, reject) => {
       const worker = new Worker(new URL('./download-worker.ts', import.meta.url), { type: 'module' })
       let settled = false

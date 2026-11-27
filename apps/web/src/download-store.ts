@@ -80,6 +80,18 @@ export async function removePartial(accountId: string, fileId: string) {
   } catch { /* nothing stored */ }
 }
 
+// sweepPartials deletes stored bytes that no download record claims, for example after a clear interrupted by a reload.
+export async function sweepPartials(accountId: string, keep: (fileId: string) => boolean) {
+  try {
+    const directory = await accountDirectory(accountId, false) as FileSystemDirectoryHandle & { keys(): AsyncIterable<string> }
+    const orphans: string[] = []
+    for await (const name of directory.keys()) {
+      if (name.endsWith('.part') && !keep(name.slice(0, -'.part'.length))) orphans.push(name)
+    }
+    await Promise.all(orphans.map(name => directory.removeEntry(name).catch(() => undefined)))
+  } catch { /* nothing stored */ }
+}
+
 // Sign-out removes this account's download records and every byte kept for them on this device.
 export async function purgeDownloads(accountId: string) {
   try { localStorage.removeItem('fluxparcel-paused-downloads:' + accountId) } catch { /* nothing stored */ }

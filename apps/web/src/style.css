@@ -155,6 +155,13 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .choice-group legend { font-weight: 700; margin-bottom: .3rem; }
 .choice-group .toggle-row { font-weight: 500; }
 .settings-row { display: flex; flex-wrap: wrap; gap: 1rem; }
+.settings-row label { display: grid; gap: .35rem; flex: 1 1 10rem; font-weight: 630; font-size: .9rem; }
+.settings-row input, .settings-row select { width: 100%; min-height: 46px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .65rem .8rem; font-weight: 400; }
+.transfer-filters { display: flex; flex-wrap: wrap; gap: .4rem; }
+.transfer-filters [aria-pressed="true"] { background: var(--soft); border-color: currentColor; }
+.entry-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.batch-bar { display: grid; gap: .4rem; }
+.batch-bar p { margin: 0; }
 .queue-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .queue-controls label { display: flex; align-items: center; gap: .5rem; font-weight: 600; }
 .queue-controls select { width: auto; }
