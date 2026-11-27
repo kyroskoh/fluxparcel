@@ -7,6 +7,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 ## [Unreleased]
 
 ### Added
+- **Transfer filters and batch actions:** the Transfers page filters by direction and status, searches by file or
+  conversation, and sorts by queue order, date, size or status. Pause, resume, retry or cancel the selected
+  transfers, or everything shown, with a report of what changed and what was skipped, and clear finished transfers.
+  Each transfer links to its conversation.
 - **Network policy:** choose any network, Wi-Fi only, or asking before transfers over 100 MiB on cellular or unknown
   networks. Held transfers wait without failing and continue when the network allows. A running transfer stops,
   keeping its progress, when the device moves to a disallowed network. A single transfer can be allowed with an
@@ -52,6 +56,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 - `RATE_LIMIT_SCALE` lets disposable test stacks raise per-address rate limits.
 
 ### Fixed
+- **Pause while starting:** a transfer paused in the moment before it started sending kept running in the background
+  and could show as finished. It now stays paused.
+- **Clear then reload:** a cleared download could reappear after an immediate reload. Stored bytes without a record
+  are now removed when the page loads.
 - A manual pause now survives an immediate page reload: the pause intent is recorded synchronously as well as in
   IndexedDB, whose write could still be in flight.
 

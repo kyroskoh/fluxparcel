@@ -24,6 +24,7 @@ export type UploadJob = {
   priority: Priority
   // Lower runs first; see rank in transfer-policy.
   rank: number
+  createdAt: number
   // Why the network policy is holding this upload, if it is.
   block?: NetworkBlock
 }
@@ -146,7 +147,7 @@ export class TransferManager {
       }
       const upload: Upload = {
         record, file, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
-        job: { id, conversationId, name: file.name, size: file.size, state: 'queued', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0 },
+        job: { id, conversationId, name: file.name, size: file.size, state: 'queued', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0, createdAt: 0 },
       }
       this.uploads.set(id, upload)
       if (file.size > this.maxFileSize) {
@@ -344,7 +345,7 @@ export class TransferManager {
       if (current?.controller) continue
       const upload: Upload = current ?? {
         record, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
-        job: { id: record.id, conversationId: record.conversationId, name: record.name, size: record.size, state: 'needs-file', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0 },
+        job: { id: record.id, conversationId: record.conversationId, name: record.name, size: record.size, state: 'needs-file', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0, createdAt: 0 },
       }
       upload.record = record
       this.uploads.set(record.id, upload)
@@ -428,7 +429,7 @@ export class TransferManager {
       const verifiedBytes = this.verifiedBytes(upload)
       const inflight = [...upload.inflight.values()].reduce((total, bytes) => total + bytes, 0)
       const { priority, queuedAt } = this.ordering(upload)
-      return { ...upload.job, verifiedBytes, sentBytes: Math.min(upload.record.size, verifiedBytes + inflight), priority, rank: rank(priority, queuedAt) }
+      return { ...upload.job, verifiedBytes, sentBytes: Math.min(upload.record.size, verifiedBytes + inflight), priority, rank: rank(priority, queuedAt), createdAt: upload.record.createdAt }
     })
     for (const listener of this.listeners) listener()
   }
@@ -458,6 +459,7 @@ export class TransferManager {
     try {
       if (navigator.locks) {
         await navigator.locks.request(lockName(upload.record.id), { ifAvailable: true }, async lock => {
+          if (controller.signal.aborted) return
           if (!lock) {
             this.update(upload, { state: 'elsewhere', error: '' })
             return
@@ -479,11 +481,13 @@ export class TransferManager {
 
   private async send(upload: Upload, signal: AbortSignal) {
     try {
+      signal.throwIfAborted()
       if (!navigator.onLine) throw new Offline()
       const record = upload.record
       if (upload.file && (!record.sha256 || upload.verifyIdentity)) {
         this.update(upload, { state: 'preparing', preparedBytes: 0 })
         const sha256 = await this.hash(upload.file, upload, signal)
+        signal.throwIfAborted()
         if (upload.verifyIdentity && sha256 !== record.sha256) {
           upload.file = undefined
           this.update(upload, { state: 'needs-file', error: 'That is a different file. Choose the original file to resume.' })
@@ -493,6 +497,7 @@ export class TransferManager {
         record.sha256 = sha256
         this.persist(upload)
       }
+      signal.throwIfAborted()
       this.update(upload, { state: 'uploading' })
       upload.transfer = await this.withRetry(upload, signal, () => api<TransferView>('/transfers', 'POST', {
         conversationId: record.conversationId, clientId: record.id, name: record.name, size: record.size,
@@ -532,6 +537,8 @@ export class TransferManager {
   }
 
   private hash(file: File, upload: Upload, signal: AbortSignal) {
+    // A pause can land while the lock is pending; an aborted signal never fires its event again.
+    if (signal.aborted) return Promise.reject(signal.reason)
     return new Promise<string>((resolve, reject) => {
       const worker = new Worker(new URL('./hash-worker.ts', import.meta.url), { type: 'module' })
       const finish = () => worker.terminate()
