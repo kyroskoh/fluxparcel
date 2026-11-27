@@ -1,3 +1,4 @@
+import type { Priority } from './transfer-policy'
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 // A durable upload record holds the file's identity and server transfer, never the file bytes. Browsers would
@@ -18,6 +19,11 @@ export type UploadRecord = {
   paused: boolean
   error?: string
   createdAt: number
+  // Scheduling: priority and the time the job joined the queue (FIFO and aging); both default for older records.
+  priority?: Priority
+  queuedAt?: number
+  // The user explicitly allowed this upload on a network its policy would otherwise hold it on.
+  networkAllowed?: boolean
 }
 
 interface UploadDatabase extends DBSchema {

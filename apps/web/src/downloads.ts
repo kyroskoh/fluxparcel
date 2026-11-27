@@ -4,6 +4,10 @@ import {
   appDownloadsSupported, downloadChannel, loadDownloads, partialFile, removeDownload, removePartial, saveDownload,
   type DownloadRecord,
 } from './download-store'
+import {
+  blockMessage, currentNetwork, loadSettings, networkBlock, placeBeside, queueTime, rank, watchConditions,
+  type NetworkBlock, type Priority, type TransferSettings,
+} from './transfer-policy'
 import { formatBytes } from './transfers'
 
 export type DownloadState = 'queued' | 'downloading' | 'paused' | 'waiting' | 'retrying' | 'verifying' | 'elsewhere'
@@ -20,6 +24,11 @@ export type DownloadJob = {
   error: string
   // Set when the server's copy no longer matches the partial bytes; resuming would mix two versions.
   restartRequired: boolean
+  priority: Priority
+  // Lower runs first; see rank in transfer-policy.
+  rank: number
+  // Why the network policy is holding this download, if it is.
+  block?: NetworkBlock
 }
 
 export type DownloadSource = { id: string; name: string; size: number; sha256: string }
@@ -27,9 +36,11 @@ export type DownloadSource = { id: string; name: string; size: number; sha256: s
 // settled resolves when a running attempt has closed its file handle, so the partial copy can be removed safely.
 type Download = { job: DownloadJob; record: DownloadRecord; controller?: AbortController; attempts: number; settled?: Promise<void> }
 
-const maxActiveDownloads = 3
 const maxAttempts = 5
 const running: DownloadState[] = ['downloading', 'retrying', 'verifying']
+// Downloads that have not started yet can be reordered; active downloads are never interrupted by a reorder.
+const reorderable: DownloadState[] = ['queued', 'waiting', 'paused']
+const finished: DownloadState[] = ['completed', 'failed', 'cancelled']
 const lockName = (fileId: string) => 'fluxparcel-download:' + fileId
 
 class Offline extends Error {}
@@ -60,8 +71,12 @@ export class DownloadManager {
   private started = false
   private channel?: BroadcastChannel
   supported = appDownloadsSupported()
+  private settings: TransferSettings
+  private unwatch?: () => void
 
-  constructor(private accountId: string) {}
+  constructor(private accountId: string) {
+    this.settings = loadSettings(accountId)
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -86,6 +101,8 @@ export class DownloadManager {
     this.started = true
     window.addEventListener('online', this.online)
     window.addEventListener('offline', this.offline)
+    this.settings = loadSettings(this.accountId)
+    this.unwatch = watchConditions(this.accountId, this.conditionsChanged)
     if (typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel(downloadChannel(this.accountId))
       this.channel.onmessage = () => void this.restore()
@@ -102,6 +119,8 @@ export class DownloadManager {
     this.started = false
     window.removeEventListener('online', this.online)
     window.removeEventListener('offline', this.offline)
+    this.unwatch?.()
+    this.unwatch = undefined
     this.channel?.close()
     this.channel = undefined
     for (const download of this.downloads.values()) {
@@ -118,7 +137,7 @@ export class DownloadManager {
     }
     const record: DownloadRecord = {
       accountId: this.accountId, fileId: file.id, conversationId, name: file.name, size: file.size, sha256: file.sha256,
-      paused: false, completed: false, createdAt: Date.now(),
+      paused: false, completed: false, createdAt: Date.now(), priority: 'normal', queuedAt: queueTime(),
     }
     const download: Download = { record, attempts: 0, job: this.blankJob(record) }
     this.downloads.set(file.id, download)
@@ -145,6 +164,37 @@ export class DownloadManager {
     this.rememberPause(fileId, false)
     this.persist(download)
     this.update(download, { state: 'queued', error: '' })
+    this.pump()
+  }
+
+  // allowNetwork records the user's explicit consent to download this file on a network its policy would hold it on.
+  allowNetwork(fileId: string) {
+    const download = this.downloads.get(fileId)
+    if (!download || finished.includes(download.job.state)) return
+    download.record.networkAllowed = true
+    this.persist(download)
+    if (download.job.block) this.update(download, { state: 'queued', block: undefined, error: '' })
+    this.pump()
+  }
+
+  setPriority(fileId: string, priority: Priority) {
+    const download = this.downloads.get(fileId)
+    if (!download || finished.includes(download.job.state)) return
+    download.record.priority = priority
+    this.persist(download)
+    this.emit()
+    this.pump()
+  }
+
+  // move swaps a waiting download with its neighbour in the queue; active downloads keep running.
+  move(fileId: string, direction: 'up' | 'down') {
+    const order = [...this.downloads.values()].filter(download => reorderable.includes(download.job.state)).sort(this.byRank)
+    const index = order.findIndex(download => download.record.fileId === fileId)
+    const neighbour = order[index + (direction === 'up' ? -1 : 1)]
+    if (index < 0 || !neighbour) return
+    Object.assign(order[index].record, placeBeside(this.ordering(neighbour), direction))
+    this.persist(order[index])
+    this.emit()
     this.pump()
   }
 
@@ -195,8 +245,38 @@ export class DownloadManager {
   private blankJob(record: DownloadRecord): DownloadJob {
     return {
       fileId: record.fileId, conversationId: record.conversationId, name: record.name, size: record.size, state: 'queued',
-      committedBytes: 0, receivedBytes: 0, error: '', restartRequired: false,
+      committedBytes: 0, receivedBytes: 0, error: '', restartRequired: false, priority: 'normal', rank: 0,
     }
+  }
+
+  private ordering(download: Download) {
+    return { priority: download.record.priority ?? 'normal', queuedAt: download.record.queuedAt ?? download.record.createdAt }
+  }
+
+  private byRank = (a: Download, b: Download) => {
+    const first = this.ordering(a)
+    const second = this.ordering(b)
+    return rank(first.priority, first.queuedAt) - rank(second.priority, second.queuedAt) || a.record.fileId.localeCompare(b.record.fileId)
+  }
+
+  private block(download: Download) {
+    return networkBlock(this.settings.policy, currentNetwork(), download.record.size - download.job.committedBytes, Boolean(download.record.networkAllowed))
+  }
+
+  // conditionsChanged re-applies the policy after a network change or a settings change in any tab.
+  private conditionsChanged = () => {
+    this.settings = loadSettings(this.accountId)
+    for (const download of this.downloads.values()) {
+      const block = this.block(download)
+      if (download.job.state === 'waiting' && download.job.block && !block) this.update(download, { state: 'queued', block: undefined, error: '' })
+      else if (block && running.includes(download.job.state) && download.job.state !== 'verifying') this.interrupt(download, 'waiting', block)
+      else if (block && download.job.state === 'waiting' && download.job.block !== block) this.hold(download, block)
+    }
+    this.pump()
+  }
+
+  private hold(download: Download, block: NetworkBlock) {
+    this.update(download, { state: 'waiting', block, receivedBytes: download.job.committedBytes, error: blockMessage(block, currentNetwork()) })
   }
 
   private async forget(download: Download) {
@@ -266,7 +346,7 @@ export class DownloadManager {
 
   private online = () => {
     for (const download of this.downloads.values()) {
-      if (download.job.state === 'waiting') this.update(download, { state: 'queued', error: '' })
+      if (download.job.state === 'waiting' && !download.job.block) this.update(download, { state: 'queued', error: '' })
     }
     this.pump()
   }
@@ -277,32 +357,44 @@ export class DownloadManager {
     }
   }
 
-  private interrupt(download: Download, state: DownloadState) {
+  private interrupt(download: Download, state: DownloadState, block?: NetworkBlock) {
     const controller = download.controller
     download.controller = undefined
     this.update(download, {
-      state, receivedBytes: download.job.committedBytes,
-      error: state === 'waiting' ? 'Waiting for a network connection.' : '',
+      state, block, receivedBytes: download.job.committedBytes,
+      error: block ? blockMessage(block, currentNetwork()) : state === 'waiting' ? 'Waiting for a network connection.' : '',
     })
     controller?.abort(new DOMException('Interrupted', 'AbortError'))
   }
 
   private update(download: Download, change: Partial<DownloadJob>) {
-    download.job = { ...download.job, ...change }
+    download.job = { ...download.job, ...(change.state && change.state !== 'waiting' ? { block: undefined } : {}), ...change }
     this.emit()
   }
 
   private emit() {
-    this.snapshot = { supported: this.supported, jobs: [...this.downloads.values()].map(download => download.job) }
+    this.snapshot = {
+      supported: this.supported,
+      jobs: [...this.downloads.values()].map(download => {
+        const { priority, queuedAt } = this.ordering(download)
+        return { ...download.job, priority, rank: rank(priority, queuedAt) }
+      }),
+    }
     for (const listener of this.listeners) listener()
   }
 
+  // pump starts the highest-ranked queued downloads that the network policy allows. Held and paused downloads do
+  // not take a slot, so one blocked job never holds up the rest of the queue.
   private pump() {
     if (!this.started) return
     let active = [...this.downloads.values()].filter(download => running.includes(download.job.state)).length
-    for (const download of this.downloads.values()) {
-      if (active >= maxActiveDownloads) break
-      if (download.job.state !== 'queued') continue
+    for (const download of [...this.downloads.values()].filter(download => download.job.state === 'queued').sort(this.byRank)) {
+      const block = this.block(download)
+      if (block) {
+        this.hold(download, block)
+        continue
+      }
+      if (active >= this.settings.downloads) continue
       active++
       void this.run(download)
     }
@@ -450,6 +542,9 @@ export function useDownloads(accountId: string) {
     cancel: (fileId: string) => void manager.cancel(fileId),
     save: (fileId: string) => void manager.save(fileId),
     dismiss: (fileId: string) => void manager.dismiss(fileId),
+    allowNetwork: (fileId: string) => manager.allowNetwork(fileId),
+    setPriority: (fileId: string, priority: Priority) => manager.setPriority(fileId, priority),
+    move: (fileId: string, direction: 'up' | 'down') => manager.move(fileId, direction),
   }
 }
 

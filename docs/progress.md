@@ -7,7 +7,7 @@ the later milestones.
 | --- | --- | --- |
 | FR-01 Accounts and device sessions | Registration, login, logout, refresh rotation, email verification, display names, device listing and revocation, account deletion | Password recovery, avatars, further account privacy controls, production email and abuse testing |
 | FR-02, FR-03 QR and messaging | Private group and direct text chat, group and contact QR links, contact approval, camera/gallery QR scanning, invitation review and revocation, group member listing, role changes, removal, leaving and ownership transfer, message edits and deletion | Replies, reactions and edit history |
-| FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, chat attachments up to 64 GiB with part and whole-file SHA-256 verification, foreground pause/resume/cancel/retry, uploads persisted across reloads with verified file reselection, cross-tab locking, sender-chosen file expiry, admin snapshots with restore and purge, a lifecycle worker with orphan cleanup, app-managed downloads with pause, resume and verification | Malware scanning, real-device download tests on Safari and Firefox, quotas, storage preflight, network policy, priorities, folders and batch controls |
+| FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, chat attachments up to 64 GiB with part and whole-file SHA-256 verification, foreground pause/resume/cancel/retry, uploads persisted across reloads with verified file reselection, cross-tab locking, sender-chosen file expiry, admin snapshots with restore and purge, a lifecycle worker with orphan cleanup, app-managed downloads with pause, resume and verification, a device network policy with confirmed per-transfer overrides, priorities with aging, manual reordering and configurable concurrency | Malware scanning, real-device download tests on Safari and Firefox, quotas, storage preflight, data budgets, bandwidth caps, a cross-tab scheduler, folders and batch controls |
 | FR-05 Offline delivery and synchronization | Static offline shell, PostgreSQL message history, live WebSocket notices, cursor catch-up, polling fallback, durable offline text outbox, cross-device unread counts and opt-in reciprocal read receipts | Web Push, device delivery receipts and per-message receipt history |
 | FR-07 Abuse and administration | Authentication and chat rate limits, group invitation revocation | Blocking, reporting and authorized admin tools |
 | FR-08 Temporary file sharing | Scheduled | Authenticated temporary file-session grants and revocation |
@@ -86,3 +86,8 @@ Download coverage pauses a throttled download, reloads, and resumes with `Range`
 matches the original SHA-256. It also checks that a changed file stops for a restart, corrupted bytes are discarded,
 deleted access removes the partial copy, and browsers without writable private storage fall back to the browser
 download manager. See ADR 0015.
+
+Network policy coverage replaces the Network Information API to switch between Wi-Fi, cellular and unknown
+networks. It checks that Wi-Fi only holds transfers and follows network changes mid-download, that overrides need an
+explicit confirmation, and that only large transfers ask first on an unknown network. Queue coverage checks the start
+order under priority, manual moves and aging, and the upload concurrency limit. See ADR 0016.

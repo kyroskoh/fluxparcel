@@ -7,7 +7,7 @@ P0 requirement covers today and which release gates remain open.
 |---|---|---|
 | 1. Foundation | Repository tooling, responsive shell, database migrations, authentication and CI | ✅ Done |
 | 2. Chat | Private and group messaging, QR invitations, reconnect, receipts, edits and member administration | ✅ Done |
-| 3. Transfers | Multipart uploads, Range downloads, persisted uploads, pause/resume, retries, expiry and storage lifecycle | 🚧 In progress: network policy, priorities, batch actions and malware scanning remain |
+| 3. Transfers | Multipart uploads, Range downloads, persisted uploads, pause/resume, retries, expiry, storage lifecycle, network policy and priorities | 🚧 In progress: batch actions, data budgets and malware scanning remain |
 | 4. Compression | Original, ZIP, capability-gated 7z presets, media compression and archive manifests | 🗓️ Planned |
 | 5. Search | Authorized metadata, document text and archive entries; multilingual tests | 🗓️ Planned |
 | 6. Release | Browser matrix, security tests, backup and restore, observability and deployment documentation | 🗓️ Planned |

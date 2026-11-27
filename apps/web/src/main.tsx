@@ -2,7 +2,8 @@ import { useOutbox } from './use-outbox'
 import { useTransfers } from './transfers'
 import { useDownloads } from './downloads'
 import { purgeDownloads } from './download-store'
-import { TransfersPage } from './uploads'
+import { TransferSettingsCard, TransfersPage } from './uploads'
+import { clearSettings } from './transfer-policy'
 import { StorageAdmin } from './admin'
 import { purgeOutbox } from './outbox'
 import { purgeUploads } from './upload-store'
@@ -133,6 +134,7 @@ function Settings({ account, onAccount, signOut }: {
       </ActionForm>
     </section>
     <ReadReceiptSetting account={account} onAccount={onAccount} onNotice={setNotice} />
+    <TransferSettingsCard accountId={account.id} />
     <section className="settings-card">
       <h2>Email verification</h2>
       {account.verified ? <p className="muted">Email verified</p> : <>
@@ -316,6 +318,7 @@ function App() {
       void purgeDownloads(account.id).catch(() => {
         setError('Signed out. Downloaded files kept in this browser could not be removed.')
       })
+      clearSettings(account.id)
       void purgeUploads(account.id).catch(() => {
         setError('Signed out. The local upload list could not be cleared.')
       })

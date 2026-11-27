@@ -1,3 +1,4 @@
+import type { Priority } from './transfer-policy'
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 // A download record holds the file's identity and the user's pause intent. The bytes themselves live in the
@@ -12,6 +13,11 @@ export type DownloadRecord = {
   paused: boolean
   completed: boolean
   createdAt: number
+  // Scheduling: priority and the time the job joined the queue (FIFO and aging); both default for older records.
+  priority?: Priority
+  queuedAt?: number
+  // The user explicitly allowed this download on a network its policy would otherwise hold it on.
+  networkAllowed?: boolean
 }
 
 interface DownloadDatabase extends DBSchema {

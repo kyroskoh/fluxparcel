@@ -20,6 +20,7 @@ Website: [fluxparcel.xyz](https://fluxparcel.xyz).
 | Message edits and deletion, member administration | ✅ |
 | Verified, resumable attachments up to 64 GiB | ✅ |
 | Downloads with pause, resume and verification | ✅ |
+| Network policy, priorities and concurrency | ✅ |
 | File expiry, admin snapshots and storage lifecycle | ✅ |
 | Compression, archives and universal search | 🗓️ Planned ([ROADMAP.md](ROADMAP.md)) |
 
@@ -35,6 +36,8 @@ Website: [fluxparcel.xyz](https://fluxparcel.xyz).
   checked with SHA-256 before a file is published, and downloads resume with HTTP Range requests.
 - **Downloads you can pause.** Attachments download inside the app, survive reloads, resume only the missing bytes
   and are verified with SHA-256 before you save them.
+- **Transfers on your terms.** Keep large transfers to Wi-Fi or confirm them first on cellular. Set priorities,
+  reorder the queue and choose how many uploads and downloads run at once.
 - **Uploads that survive interruptions.** Pause, resume, retry and cancel. After a reload, select the same file again
   and only the missing parts are sent; a different file is refused.
 - **File expiry.** Senders can choose how long a file stays available. When it expires it disappears for everyone in
@@ -142,6 +145,7 @@ docs/progress.md             Implementation progress against the PRD's P0 requir
   - [0013 File expiry, snapshots and storage lifecycle](docs/adr/0013-file-expiry-and-storage-lifecycle.md)
   - [0014 Configurable part sizes](docs/adr/0014-configurable-part-sizes.md)
   - [0015 App-managed, resumable downloads](docs/adr/0015-app-managed-downloads.md)
+  - [0016 Network policy, priorities and concurrency](docs/adr/0016-network-policy-and-priorities.md)
 
 ## Support
 
