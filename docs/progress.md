@@ -7,7 +7,7 @@ the later milestones.
 | --- | --- | --- |
 | FR-01 Accounts and device sessions | Registration, login, logout, refresh rotation, email verification, display names, device listing and revocation, account deletion | Password recovery, avatars, further account privacy controls, production email and abuse testing |
 | FR-02, FR-03 QR and messaging | Private group and direct text chat, group and contact QR links, contact approval, camera/gallery QR scanning, invitation review and revocation, group member listing, role changes, removal, leaving and ownership transfer, message edits and deletion | Replies, reactions and edit history |
-| FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, chat attachments up to 64 GiB with part and whole-file SHA-256 verification, foreground pause/resume/cancel/retry, uploads persisted across reloads with verified file reselection, cross-tab locking, sender-chosen file expiry, admin snapshots with restore and purge, a lifecycle worker with orphan cleanup, Range downloads | Malware scanning, app-managed download resume, quotas, storage preflight, network policy, priorities, folders and batch controls |
+| FR-04, FR-06, FR-15, FR-18 Transfers, policies and folders | Private S3 development bucket and readiness check, chat attachments up to 64 GiB with part and whole-file SHA-256 verification, foreground pause/resume/cancel/retry, uploads persisted across reloads with verified file reselection, cross-tab locking, sender-chosen file expiry, admin snapshots with restore and purge, a lifecycle worker with orphan cleanup, app-managed downloads with pause, resume and verification | Malware scanning, real-device download tests on Safari and Firefox, quotas, storage preflight, network policy, priorities, folders and batch controls |
 | FR-05 Offline delivery and synchronization | Static offline shell, PostgreSQL message history, live WebSocket notices, cursor catch-up, polling fallback, durable offline text outbox, cross-device unread counts and opt-in reciprocal read receipts | Web Push, device delivery receipts and per-message receipt history |
 | FR-07 Abuse and administration | Authentication and chat rate limits, group invitation revocation | Blocking, reporting and authorized admin tools |
 | FR-08 Temporary file sharing | Scheduled | Authenticated temporary file-session grants and revocation |
@@ -81,3 +81,8 @@ transitions against real storage. See ADR 0013.
 Part-size coverage checks that a requested 16 MiB size is recorded, that out-of-range sizes are refused, and that the
 browser uploads at a server-assigned 5 MiB size with exact bytes. Go tests cover size selection, the 10,000-part
 limit and the memory budget. See ADR 0014.
+
+Download coverage pauses a throttled download, reloads, and resumes with `Range` and `If-Range` to a verified file that
+matches the original SHA-256. It also checks that a changed file stops for a restart, corrupted bytes are discarded,
+deleted access removes the partial copy, and browsers without writable private storage fall back to the browser
+download manager. See ADR 0015.

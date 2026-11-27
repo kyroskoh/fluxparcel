@@ -7,6 +7,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 ## [Unreleased]
 
 ### Added
+- **App-managed downloads:** attachments download inside the app with pause, resume and reload recovery. Bytes stream
+  into the browser's private storage in 8 MiB checkpoints, resumes use `If-Range` keyed by the file's SHA-256, and
+  the whole file is verified before it can be saved. Browsers without writable private storage keep their own
+  download manager.
 - **Configurable part sizes:** `TRANSFER_PART_SIZE` (5–64 MiB, 8 MiB by default) and an optional per-transfer
   `partSize` request. Each transfer keeps its own part size, so changing the default never disturbs uploads in
   progress, and the server raises the size when a file would exceed 10,000 parts.
