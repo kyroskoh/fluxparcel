@@ -7,6 +7,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Nothing has bee
 ## [Unreleased]
 
 ### Added
+- **Network policy:** choose any network, Wi-Fi only, or asking before transfers over 100 MiB on cellular or unknown
+  networks. Held transfers wait without failing and continue when the network allows. A running transfer stops,
+  keeping its progress, when the device moves to a disallowed network. A single transfer can be allowed with an
+  explicit confirmation.
+- **Transfer priorities:** set High, Normal or Low per upload or download, and move waiting transfers up or down on the
+  Transfers page. Transfers are first in, first out within a priority, and long-waiting ones are never starved.
+  Uploads and downloads at a time are configurable from 1 to 5.
 - **App-managed downloads:** attachments download inside the app with pause, resume and reload recovery. Bytes stream
   into the browser's private storage in 8 MiB checkpoints, resumes use `If-Range` keyed by the file's SHA-256, and
   the whole file is verified before it can be saved. Browsers without writable private storage keep their own

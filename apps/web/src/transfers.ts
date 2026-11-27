@@ -1,6 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api, ApiError } from './api'
 import { loadCapabilities } from './capabilities'
+import {
+  blockMessage, currentNetwork, loadSettings, networkBlock, placeBeside, queueTime, rank, watchConditions,
+  type NetworkBlock, type Priority, type TransferSettings,
+} from './transfer-policy'
 import { loadUploads, removeUpload, saveUpload, uploadChannel, type UploadRecord } from './upload-store'
 
 export type UploadState = 'preparing' | 'queued' | 'uploading' | 'paused' | 'waiting' | 'retrying' | 'verifying'
@@ -17,6 +21,11 @@ export type UploadJob = {
   sentBytes: number
   error: string
   retryAt?: number
+  priority: Priority
+  // Lower runs first; see rank in transfer-policy.
+  rank: number
+  // Why the network policy is holding this upload, if it is.
+  block?: NetworkBlock
 }
 
 type TransferView = { id: string; partSize: number; partCount: number; parts: number[]; state: string; expiresAt: string }
@@ -34,12 +43,13 @@ type Upload = {
   attempts: number
 }
 
-const maxActiveUploads = 3
 const partsPerUpload = 2
 const maxAttempts = 5
 const defaultMaxFileSize = 64 * 1024 ** 3
 const running: UploadState[] = ['preparing', 'uploading', 'retrying', 'verifying']
 const terminal: UploadState[] = ['completed', 'cancelled']
+// Jobs that have not started yet can be reordered; active jobs are never interrupted by a reorder.
+const reorderable: UploadState[] = ['queued', 'waiting', 'paused', 'needs-file']
 const lockName = (id: string) => 'fluxparcel-upload:' + id
 
 class Offline extends Error {}
@@ -71,7 +81,7 @@ export function formatBytes(bytes: number) {
   return value.toFixed(value < 10 ? 1 : 0) + ' ' + units[unit]
 }
 
-// Uploads run in a foreground tab: three files at a time, two parts per file. Each upload's identity and
+// Uploads run in a foreground tab: three files at a time by default, two parts per file, highest rank first. Each upload's identity and
 // server transfer are kept in IndexedDB, so a reload or crash resumes from the parts the server acknowledged.
 // Manual pause is sticky; network loss only parks uploads until the browser reports it is online again.
 export class TransferManager {
@@ -81,8 +91,12 @@ export class TransferManager {
   private started = false
   private channel?: BroadcastChannel
   private maxFileSize = defaultMaxFileSize
+  private settings: TransferSettings
+  private unwatch?: () => void
 
-  constructor(private accountId: string) {}
+  constructor(private accountId: string) {
+    this.settings = loadSettings(accountId)
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -97,6 +111,8 @@ export class TransferManager {
     window.addEventListener('online', this.online)
     window.addEventListener('offline', this.offline)
     window.addEventListener('beforeunload', this.beforeUnload)
+    this.settings = loadSettings(this.accountId)
+    this.unwatch = watchConditions(this.accountId, this.conditionsChanged)
     if (typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel(uploadChannel(this.accountId))
       this.channel.onmessage = () => void this.restore()
@@ -112,6 +128,8 @@ export class TransferManager {
     window.removeEventListener('online', this.online)
     window.removeEventListener('offline', this.offline)
     window.removeEventListener('beforeunload', this.beforeUnload)
+    this.unwatch?.()
+    this.unwatch = undefined
     this.channel?.close()
     this.channel = undefined
     for (const upload of this.uploads.values()) {
@@ -124,11 +142,11 @@ export class TransferManager {
       const id = crypto.randomUUID()
       const record: UploadRecord = {
         accountId: this.accountId, id, conversationId, name: file.name, size: file.size, type: file.type,
-        lastModified: file.lastModified, expiresInSeconds, paused: false, createdAt: Date.now(),
+        lastModified: file.lastModified, expiresInSeconds, paused: false, createdAt: Date.now(), priority: 'normal', queuedAt: queueTime(),
       }
       const upload: Upload = {
         record, file, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
-        job: { id, conversationId, name: file.name, size: file.size, state: 'queued', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '' },
+        job: { id, conversationId, name: file.name, size: file.size, state: 'queued', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0 },
       }
       this.uploads.set(id, upload)
       if (file.size > this.maxFileSize) {
@@ -188,6 +206,38 @@ export class TransferManager {
     this.pump()
   }
 
+  // allowNetwork records the user's explicit consent to send this upload on a network its policy would hold it on.
+  allowNetwork(id: string) {
+    const upload = this.uploads.get(id)
+    if (!upload || terminal.includes(upload.job.state)) return
+    upload.record.networkAllowed = true
+    this.persist(upload)
+    if (upload.job.block) this.update(upload, { state: 'queued', block: undefined, error: '' })
+    this.pump()
+  }
+
+  setPriority(id: string, priority: Priority) {
+    const upload = this.uploads.get(id)
+    if (!upload || terminal.includes(upload.job.state)) return
+    upload.record.priority = priority
+    this.persist(upload)
+    this.emit()
+    this.pump()
+  }
+
+  // move swaps a waiting upload with its neighbour in the queue; active uploads keep running.
+  move(id: string, direction: 'up' | 'down') {
+    const order = [...this.uploads.values()].filter(upload => reorderable.includes(upload.job.state)).sort(this.byRank)
+    const index = order.findIndex(upload => upload.record.id === id)
+    const neighbour = order[index + (direction === 'up' ? -1 : 1)]
+    if (index < 0 || !neighbour) return
+    const placed = placeBeside(this.ordering(neighbour), direction)
+    Object.assign(order[index].record, placed)
+    this.persist(order[index])
+    this.emit()
+    this.pump()
+  }
+
   dismiss(id: string) {
     const upload = this.uploads.get(id)
     if (upload && ['completed', 'cancelled', 'failed'].includes(upload.job.state)) {
@@ -195,6 +245,45 @@ export class TransferManager {
       this.uploads.delete(id)
       this.emit()
     }
+  }
+
+  private ordering(upload: Upload) {
+    return { priority: upload.record.priority ?? 'normal', queuedAt: upload.record.queuedAt ?? upload.record.createdAt }
+  }
+
+  private byRank = (a: Upload, b: Upload) => {
+    const first = this.ordering(a)
+    const second = this.ordering(b)
+    return rank(first.priority, first.queuedAt) - rank(second.priority, second.queuedAt) || a.record.id.localeCompare(b.record.id)
+  }
+
+  private verifiedBytes(upload: Upload) {
+    const partSize = upload.transfer?.partSize ?? 0
+    let bytes = 0
+    for (const number of upload.verified) bytes += Math.min(partSize, upload.record.size - (number - 1) * partSize)
+    return bytes
+  }
+
+  // The policy weighs only the bytes still to send.
+  private block(upload: Upload) {
+    const remaining = upload.record.size - this.verifiedBytes(upload)
+    return networkBlock(this.settings.policy, currentNetwork(), remaining, Boolean(upload.record.networkAllowed))
+  }
+
+  // conditionsChanged re-applies the policy after a network change or a settings change in any tab.
+  private conditionsChanged = () => {
+    this.settings = loadSettings(this.accountId)
+    for (const upload of this.uploads.values()) {
+      const block = this.block(upload)
+      if (upload.job.state === 'waiting' && upload.job.block && !block) this.update(upload, { state: 'queued', block: undefined, error: '' })
+      else if (block && running.includes(upload.job.state) && upload.job.state !== 'verifying') this.interrupt(upload, 'waiting', block)
+      else if (block && upload.job.state === 'waiting' && upload.job.block !== block) this.hold(upload, block)
+    }
+    this.pump()
+  }
+
+  private hold(upload: Upload, block: NetworkBlock) {
+    this.update(upload, { state: 'waiting', block, retryAt: undefined, error: blockMessage(block, currentNetwork()) })
   }
 
   // An upload can run when it has its file, or when the server already holds every part and only completion remains.
@@ -255,7 +344,7 @@ export class TransferManager {
       if (current?.controller) continue
       const upload: Upload = current ?? {
         record, verifyIdentity: false, verified: new Set(), inflight: new Map(), attempts: 0,
-        job: { id: record.id, conversationId: record.conversationId, name: record.name, size: record.size, state: 'needs-file', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '' },
+        job: { id: record.id, conversationId: record.conversationId, name: record.name, size: record.size, state: 'needs-file', preparedBytes: 0, verifiedBytes: 0, sentBytes: 0, error: '', priority: 'normal', rank: 0 },
       }
       upload.record = record
       this.uploads.set(record.id, upload)
@@ -305,7 +394,7 @@ export class TransferManager {
 
   private online = () => {
     for (const upload of this.uploads.values()) {
-      if (upload.job.state === 'waiting') this.update(upload, { state: 'queued', error: '' })
+      if (upload.job.state === 'waiting' && !upload.job.block) this.update(upload, { state: 'queued', error: '' })
     }
     this.pump()
   }
@@ -320,36 +409,42 @@ export class TransferManager {
     if ([...this.uploads.values()].some(upload => running.includes(upload.job.state))) event.preventDefault()
   }
 
-  private interrupt(upload: Upload, state: UploadState) {
+  private interrupt(upload: Upload, state: UploadState, block?: NetworkBlock) {
     const controller = upload.controller
     upload.controller = undefined
     upload.inflight.clear()
-    this.update(upload, { state, retryAt: undefined, error: state === 'waiting' ? 'Waiting for a network connection.' : '' })
+    const error = block ? blockMessage(block, currentNetwork()) : state === 'waiting' ? 'Waiting for a network connection.' : ''
+    this.update(upload, { state, block, retryAt: undefined, error })
     controller?.abort(new DOMException('Interrupted', 'AbortError'))
   }
 
   private update(upload: Upload, change: Partial<UploadJob>) {
-    upload.job = { ...upload.job, ...change }
+    upload.job = { ...upload.job, ...(change.state && change.state !== 'waiting' ? { block: undefined } : {}), ...change }
     this.emit()
   }
 
   private emit() {
     this.snapshot = [...this.uploads.values()].map(upload => {
-      const partSize = upload.transfer?.partSize ?? 0
-      let verifiedBytes = 0
-      for (const number of upload.verified) verifiedBytes += Math.min(partSize, upload.record.size - (number - 1) * partSize)
+      const verifiedBytes = this.verifiedBytes(upload)
       const inflight = [...upload.inflight.values()].reduce((total, bytes) => total + bytes, 0)
-      return { ...upload.job, verifiedBytes, sentBytes: Math.min(upload.record.size, verifiedBytes + inflight) }
+      const { priority, queuedAt } = this.ordering(upload)
+      return { ...upload.job, verifiedBytes, sentBytes: Math.min(upload.record.size, verifiedBytes + inflight), priority, rank: rank(priority, queuedAt) }
     })
     for (const listener of this.listeners) listener()
   }
 
+  // pump starts the highest-ranked queued uploads that the network policy allows. Held and paused uploads do not
+  // take a slot, so one blocked job never holds up the rest of the queue.
   private pump() {
     if (!this.started) return
     let active = [...this.uploads.values()].filter(upload => running.includes(upload.job.state)).length
-    for (const upload of this.uploads.values()) {
-      if (active >= maxActiveUploads) break
-      if (upload.job.state !== 'queued') continue
+    for (const upload of [...this.uploads.values()].filter(upload => upload.job.state === 'queued').sort(this.byRank)) {
+      const block = this.block(upload)
+      if (block) {
+        this.hold(upload, block)
+        continue
+      }
+      if (active >= this.settings.uploads) continue
       active++
       void this.run(upload)
     }
@@ -564,6 +659,9 @@ export function useTransfers(accountId: string) {
     resume: (id: string) => manager.resume(id),
     cancel: (id: string) => manager.cancel(id),
     dismiss: (id: string) => manager.dismiss(id),
+    allowNetwork: (id: string) => manager.allowNetwork(id),
+    setPriority: (id: string, priority: Priority) => manager.setPriority(id, priority),
+    move: (id: string, direction: 'up' | 'down') => manager.move(id, direction),
   }
 }
 
